@@ -3,10 +3,10 @@ import { Label } from "./components";
 function App() {
   return (
     <div>
-      {Array(950)
+      {Array(50)
         .fill(0)
         .map((_, idx) => (
-          <Label key={idx} number={idx + 1} />
+          <Label key={idx} number={idx + 851} />
         ))}
     </div>
   );
