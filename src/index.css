@@ -2,15 +2,181 @@
 @tailwind components;
 @tailwind utilities;
 
+/**
+ * Editor chrome theme.
+ *
+ * Every chrome colour is a token, so re-theming is a change to these values
+ * rather than an edit across every component. The accent is set at runtime
+ * from the user's pick (see lib/theme.ts).
+ *
+ * The LABEL ITSELF is never themed: it is print artwork on physical stock, so
+ * it always renders with the design's own background and colours.
+ */
 :root {
+  color-scheme: dark;
+
+  /* Surfaces, from furthest back to nearest front. */
+  --bg: #0e1116;
+  --surface: #151a21;
+  --surface-2: #1c222b;
+  --surface-3: #252c37;
+  --canvas-bg: #0a0d11;
+
+  /* Lines */
+  --border: #2a323d;
+  --border-strong: #3a4553;
+
+  /* Text */
+  --text: #e6e9ef;
+  --text-dim: #9aa4b2;
+  --text-faint: #6b7686;
+
+  /* Accent — overridden at runtime for personalisation. */
+  --accent: #4f8ef7;
+  --accent-soft: rgba(79, 142, 247, 0.16);
+  --accent-text: #ffffff;
+
+  /* Feedback */
+  --danger: #f2555a;
+  --danger-soft: rgba(242, 85, 90, 0.14);
+  --ok: #3fb97f;
+
+  --radius: 7px;
+
   font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;
   font-weight: 400;
-
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background: white;
-  color: black;
+
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* Light chrome, for anyone who prefers it or is working in bright light. */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f1f3f6;
+  --surface: #ffffff;
+  --surface-2: #f6f7f9;
+  --surface-3: #eceef2;
+  --canvas-bg: #d7dbe2;
+  --border: #dde1e7;
+  --border-strong: #c3cad4;
+  --text: #19202a;
+  --text-dim: #5a6672;
+  --text-faint: #8b95a2;
+  --accent-text: #ffffff;
+  --danger: #d6323a;
+  --danger-soft: rgba(214, 50, 58, 0.1);
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* Scrollbars that belong to the surrounding chrome rather than the OS. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 99px;
+  border: 2px solid var(--surface);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+}
+
+/* A visible, consistent focus ring for keyboard users. */
+:where(button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+
+/* Colour inputs render a chunky native frame; strip it back. */
+input[type="color"] {
+  -webkit-appearance: none;
+  appearance: none;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+input[type="color"]::-webkit-color-swatch {
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+}
+input[type="color"]::-moz-color-swatch {
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+}
+
+/* Number inputs: hide spinners, which are noisy at this density. */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+/* The print sheet exists in the DOM at all times but is only shown on paper,
+   so the editor and the output always render from the same component. */
+.print-sheet {
+  display: none;
+}
+
+@media print {
+  .screen-only {
+    display: none !important;
+  }
+
+  .print-sheet {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  /* Never let a label be split across a page break. */
+  .print-sheet > * {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  @page {
+    margin: 8mm;
+  }
+
+  /* Backgrounds and fills are the design, not decoration — keep them. */
+  * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }

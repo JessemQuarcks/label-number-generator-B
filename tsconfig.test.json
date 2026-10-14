@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    /* Tests use Array.prototype.at and node: builtins, neither of which the
+       browser build targets. */
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["vitest/globals", "node", "@testing-library/jest-dom"],
+    "noEmit": true
+  },
+  "include": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/test", "vite.config.ts"],
+  "exclude": []
+}
