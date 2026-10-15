@@ -1,6 +1,7 @@
 import type {
   Border,
   ElementType,
+  ImageFit,
   LabelDesign,
   LabelElement,
   PrintSettings,
@@ -393,7 +394,8 @@ export const createLimeJuicePreset = (): LabelDesign => {
 /** Reproduces the app's original behaviour: a pre-made image plus a number. */
 export const createImageOverlayPreset = (
   src = "Lime Juice Label - Redo 2026.jpg",
-  name = "Pre-made image + number"
+  name = "Pre-made image + number",
+  fit: ImageFit = "fill"
 ): LabelDesign => ({
   id: newId(),
   name,
@@ -414,7 +416,7 @@ export const createImageOverlayPreset = (
       rotation: 0,
       visible: true,
       src,
-      fit: "fill",
+      fit,
     },
     {
       id: newId(),
