@@ -49,9 +49,9 @@ export const asCssValue = (value: unknown, fallback: string, maxLength = 120): s
   return trimmed;
 };
 
-const DATA_IMAGE = /^data:image\/(png|jpe?g|gif|webp|avif|svg\+xml);base64,[A-Za-z0-9+/=\s]+$/i;
+const DATA_IMAGE = /^data:image\/(png|jpe?g|gif|webp|avif|svg\+xml|bmp);base64,[A-Za-z0-9+/=\s]+$/i;
 const REMOTE_IMAGE = /^https?:\/\//i;
-const LOCAL_IMAGE = /^\/?[\w\-./%@()\s]+\.(png|jpe?g|gif|webp|avif|svg)$/i;
+const LOCAL_IMAGE = /^\/?[\w\-./%@()\s]+\.(png|jpe?g|gif|webp|avif|svg|bmp)$/i;
 
 /** Only allow sources that are safe to hand to an <img src>. */
 export const asImageSrc = (value: unknown, fallback = ""): string => {
