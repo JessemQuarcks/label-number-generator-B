@@ -129,6 +129,29 @@ describe("persistence across a reload", () => {
   });
 });
 
+describe("image imports", () => {
+  it("imports an image as label artwork with a serial number", async () => {
+    render(<App />);
+    const input = document.querySelector('input[type="file"]');
+    expect(input).not.toBeNull();
+
+    const image = new File(["image data"], "citrus-label.png", { type: "image/png" });
+    await userEvent.upload(input as HTMLInputElement, image);
+
+    expect(
+      await screen.findByRole("option", { name: /citrus-label \+ number/i })
+    ).toBeInTheDocument();
+    expect(screen.getAllByRole("img", { name: "Label artwork" })[0]).toHaveAttribute(
+      "src",
+      "data:image/png;base64,aW1hZ2UgZGF0YQ=="
+    );
+    expect(screen.getAllByRole("img", { name: "Label artwork" })[0]).toHaveStyle({
+      objectFit: "contain",
+    });
+    expect(screen.getAllByText("001").length).toBeGreaterThan(0);
+  });
+});
+
 describe("fonts are ready before anything is shown or printed", () => {
   const FONT_SRC = "data:font/woff2;base64,AAAA";
 
