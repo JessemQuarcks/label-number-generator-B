@@ -191,20 +191,22 @@ describe("import", () => {
     expect(element.type === "image" && element.src).toBe("");
   });
 
-  it("keeps an uploaded data URL so embedded artwork survives a round trip", () => {
-    const src =
-      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
-    const result = parseImport(
-      JSON.stringify({
-        name: "X",
-        width: 120,
-        height: 60,
-        elements: [{ type: "image", src, width: 10, height: 10 }],
-      })
-    );
-    const element = result.designs[0].elements[0];
-    expect(element.type === "image" && element.src).toBe(src);
-  });
+  it.each(["png", "bmp"])(
+    "keeps an uploaded %s data URL so embedded artwork survives a round trip",
+    (format) => {
+      const src = `data:image/${format};base64,AAAA`;
+      const result = parseImport(
+        JSON.stringify({
+          name: "X",
+          width: 120,
+          height: 60,
+          elements: [{ type: "image", src, width: 10, height: 10 }],
+        })
+      );
+      const element = result.designs[0].elements[0];
+      expect(element.type === "image" && element.src).toBe(src);
+    }
+  );
 
   it("survives a save, export, re-import cycle unchanged", () => {
     const original = design({ name: "Round trip", width: 120, height: 60 });
