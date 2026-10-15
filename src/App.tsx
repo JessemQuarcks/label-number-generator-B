@@ -11,7 +11,7 @@ import {
   Toggle,
 } from "./components";
 import { useDesigns } from "./lib/useDesigns";
-import { PRESETS } from "./lib/defaults";
+import { createImageOverlayPreset, PRESETS } from "./lib/defaults";
 import { MAX_COUNT } from "./lib/storage";
 import { PX_PER_MM } from "./lib/units";
 import { ACCENTS, useTheme } from "./lib/theme";
@@ -25,6 +25,51 @@ import FontWarnings from "./components/FontWarnings";
 type Status = { tone: "info" | "error"; message: string } | null;
 
 const ZOOM_STEPS = [0.25, 0.5, 0.75, 1, 1.5, 2, 3];
+
+const IMAGE_MIME_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+  "image/gif",
+  "image/webp",
+  "image/avif",
+  "image/svg+xml",
+  "image/bmp",
+]);
+
+const MIME_BY_EXTENSION: Record<string, string> = {
+  avif: "image/avif",
+  bmp: "image/bmp",
+  gif: "image/gif",
+  jpeg: "image/jpeg",
+  jpg: "image/jpeg",
+  png: "image/png",
+  svg: "image/svg+xml",
+  webp: "image/webp",
+};
+
+const readImageFile = (file: File): Promise<string> => {
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+  const mimeType = file.type || MIME_BY_EXTENSION[extension] || "";
+  if (!IMAGE_MIME_TYPES.has(mimeType.toLowerCase())) {
+    return Promise.reject(
+      new Error("Unsupported image format. Use JPG, PNG, GIF, WebP, AVIF, SVG, or BMP.")
+    );
+  }
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== "string") {
+        reject(new Error("Could not read that image file."));
+        return;
+      }
+      resolve(reader.result);
+    };
+    reader.onerror = () => reject(reader.error ?? new Error("Could not read that image file."));
+    reader.readAsDataURL(new Blob([file], { type: mimeType }));
+  });
+};
 
 function App() {
   const {
@@ -100,8 +145,16 @@ function App() {
 
   const handleImport = async (file: File) => {
     try {
-      const added = importJson(await file.text());
-      notify("info", `Imported ${added} design${added === 1 ? "" : "s"}.`);
+      if (file.type === "application/json" || file.name.toLowerCase().endsWith(".json")) {
+        const added = importJson(await file.text());
+        notify("info", `Imported ${added} design${added === 1 ? "" : "s"}.`);
+        return;
+      }
+
+      const src = await readImageFile(file);
+      const imageName = file.name.replace(/\.[^.]+$/, "") || "Imported image";
+      addDesign(createImageOverlayPreset(src, `${imageName} + number`, "contain"));
+      notify("info", `Imported "${imageName}" with a serial number.`);
     } catch (error) {
       notify("error", error instanceof Error ? error.message : "Import failed.");
     }
@@ -328,7 +381,7 @@ function App() {
             <input
               ref={fileRef}
               type="file"
-              accept="application/json,.json"
+              accept="application/json,.json,image/*"
               className="sr-only"
               onChange={(event) => {
                 const file = event.target.files?.[0];
