@@ -28,24 +28,54 @@ export const THEME_KEY = "label-number-generator:theme:v1";
 
 export interface ThemePrefs {
   mode: ThemeMode;
+  /** A key from ACCENTS, or "custom" to use `customAccent`. */
   accent: string;
+  /** #rrggbb picked by the user; only used when `accent` is "custom". */
+  customAccent?: string;
 }
 
 const DEFAULT_PREFS: ThemePrefs = { mode: "dark", accent: "blue" };
 
-export const findAccent = (key: string): Accent =>
-  ACCENTS.find((a) => a.key === key) ?? ACCENTS[0];
+const HEX = /^#[0-9a-f]{6}$/i;
+
+/** Dark or light text, whichever reads better on `hex`. */
+export const textOn = (hex: string): string => {
+  const m = HEX.exec(hex.trim());
+  if (!m) return "#ffffff";
+  const n = Number.parseInt(hex.trim().slice(1), 16);
+  const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((c) => {
+    const v = c / 255;
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  });
+  const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  return luminance > 0.4 ? "#0b0f14" : "#ffffff";
+};
+
+export const findAccent = (key: string, custom?: string): Accent => {
+  if (key === "custom" && custom && HEX.test(custom)) {
+    return { key: "custom", label: "Custom", value: custom, on: textOn(custom) };
+  }
+  return ACCENTS.find((a) => a.key === key) ?? ACCENTS[0];
+};
 
 const loadPrefs = (): ThemePrefs => {
   try {
     const raw = localStorage.getItem(THEME_KEY);
     if (!raw) return { ...DEFAULT_PREFS };
     const parsed = JSON.parse(raw) as Partial<ThemePrefs>;
+    const customAccent =
+      typeof parsed?.customAccent === "string" && HEX.test(parsed.customAccent)
+        ? parsed.customAccent
+        : undefined;
+    const accent =
+      ACCENTS.some((a) => a.key === parsed?.accent) ||
+      (parsed?.accent === "custom" && customAccent)
+        ? (parsed.accent as string)
+        : DEFAULT_PREFS.accent;
     return {
       mode: parsed?.mode === "light" ? "light" : "dark",
-      accent: ACCENTS.some((a) => a.key === parsed?.accent)
-        ? (parsed.accent as string)
-        : DEFAULT_PREFS.accent,
+      accent,
+      ...(customAccent ? { customAccent } : {}),
     };
   } catch {
     return { ...DEFAULT_PREFS };
@@ -60,9 +90,9 @@ const toRgb = (hex: string): string => {
   return `${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}`;
 };
 
-export const applyTheme = ({ mode, accent }: ThemePrefs): void => {
+export const applyTheme = ({ mode, accent, customAccent }: ThemePrefs): void => {
   const root = document.documentElement;
-  const picked = findAccent(accent);
+  const picked = findAccent(accent, customAccent);
   root.dataset.theme = mode;
   root.style.setProperty("--accent", picked.value);
   root.style.setProperty("--accent-soft", `rgba(${toRgb(picked.value)}, 0.16)`);
@@ -90,10 +120,15 @@ export const useTheme = () => {
     (accent: string) => setPrefs((p) => ({ ...p, accent })),
     []
   );
+  const setCustomAccent = useCallback(
+    (hex: string) =>
+      HEX.test(hex) && setPrefs((p) => ({ ...p, accent: "custom", customAccent: hex })),
+    []
+  );
   const toggleMode = useCallback(
     () => setPrefs((p) => ({ ...p, mode: p.mode === "dark" ? "light" : "dark" })),
     []
   );
 
-  return { prefs, setMode, setAccent, toggleMode };
+  return { prefs, setMode, setAccent, setCustomAccent, toggleMode };
 };

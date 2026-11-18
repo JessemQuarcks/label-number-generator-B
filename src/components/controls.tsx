@@ -538,3 +538,294 @@ export const IconButton = ({
     {children}
   </button>
 );
+
+/* -------------------------------------------------------------------------
+ * Compact controls for the tool options bar: a label to the left, a small
+ * field to the right, all on one line.
+ * ---------------------------------------------------------------------- */
+
+const inlineInputClass =
+  "h-6 rounded-[5px] border border-[var(--border)] bg-[var(--surface-2)] px-1.5 text-[11px] " +
+  "text-[var(--text)] transition-colors hover:border-[var(--border-strong)] " +
+  "focus:border-[var(--accent)] focus:outline-none";
+
+/**
+ * A small numeric field. Commits only valid, in-range values and snaps back
+ * to the last good one on blur — the same rules as NumberInput.
+ */
+export const InlineNumber = ({
+  label,
+  value,
+  onChange,
+  min = 0,
+  max = 10000,
+  step = 1,
+  suffix,
+  width = "3.5rem",
+  integer = false,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+  suffix?: string;
+  width?: string;
+  integer?: boolean;
+}) => {
+  const [draft, setDraft] = useState(() => formatValue(value));
+  const [invalid, setInvalid] = useState(false);
+  const id = useId();
+
+  useEffect(() => {
+    if (invalid) return;
+    if (Number.parseFloat(draft) === value) return;
+    setDraft(formatValue(value));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  const commit = (raw: string) => {
+    setDraft(raw);
+    const n = Number(raw.trim());
+    const ok =
+      raw.trim() !== "" && Number.isFinite(n) && n >= min && n <= max && (!integer || Number.isInteger(n));
+    setInvalid(!ok);
+    if (ok) onChange(n);
+  };
+
+  return (
+    <span className="flex items-center gap-1.5">
+      <label htmlFor={id} className="text-[11px] text-[var(--text-faint)]">
+        {label}
+      </label>
+      <span className="relative flex items-center">
+        <input
+          id={id}
+          type="number"
+          step={step}
+          value={draft}
+          onChange={(e) => commit(e.target.value)}
+          onBlur={() => {
+            if (invalid) {
+              setDraft(formatValue(value));
+              setInvalid(false);
+            }
+          }}
+          aria-invalid={invalid || undefined}
+          className={`${inlineInputClass} ${suffix ? "pr-6" : ""} aria-[invalid=true]:border-[var(--danger)]`}
+          style={{ width }}
+        />
+        {suffix && (
+          <span className="pointer-events-none absolute right-1.5 text-[10px] text-[var(--text-faint)]">
+            {suffix}
+          </span>
+        )}
+      </span>
+    </span>
+  );
+};
+
+export function InlineSelect<T extends string | number>({
+  label,
+  value,
+  options,
+  onChange,
+  width,
+  hideLabel = false,
+}: {
+  label: string;
+  value: T;
+  options: { label: string; value: T }[];
+  onChange: (value: T) => void;
+  width?: string;
+  hideLabel?: boolean;
+}) {
+  const id = useId();
+  const isNumeric = typeof value === "number";
+  return (
+    <span className="flex items-center gap-1.5">
+      <label htmlFor={id} className={hideLabel ? "sr-only" : "text-[11px] text-[var(--text-faint)]"}>
+        {label}
+      </label>
+      <select
+        id={id}
+        value={String(value)}
+        onChange={(e) => onChange((isNumeric ? Number(e.target.value) : e.target.value) as T)}
+        className={`${inlineInputClass} cursor-pointer pr-1`}
+        style={{ width }}
+      >
+        {options.map((o) => (
+          <option key={String(o.value)} value={String(o.value)}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </span>
+  );
+}
+
+export const InlineColor = ({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) => (
+  <span className="flex items-center gap-1.5">
+    <span className="text-[11px] text-[var(--text-faint)]" aria-hidden="true">
+      {label}
+    </span>
+    <input
+      type="color"
+      aria-label={label}
+      title={`${label}: ${value}`}
+      className="h-5 w-7 shrink-0"
+      value={/^#[0-9a-f]{6}$/i.test(value) ? value : "#000000"}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  </span>
+);
+
+/** A square toggle/action button for toolbars, with an optional pressed state. */
+export const ToolButton = ({
+  children,
+  title,
+  onClick,
+  pressed,
+  disabled,
+  onContextMenu,
+  size = "md",
+}: {
+  children: ReactNode;
+  title: string;
+  onClick?: () => void;
+  pressed?: boolean;
+  disabled?: boolean;
+  onContextMenu?: (e: React.MouseEvent) => void;
+  size?: "sm" | "md";
+}) => (
+  <button
+    type="button"
+    title={title}
+    aria-label={title}
+    aria-pressed={pressed}
+    disabled={disabled}
+    onClick={onClick}
+    onContextMenu={onContextMenu}
+    className={`flex shrink-0 items-center justify-center rounded-[5px] transition-colors disabled:cursor-not-allowed disabled:opacity-30 ${
+      size === "sm" ? "h-6 w-6" : "h-8 w-8"
+    } ${
+      pressed
+        ? "bg-[var(--accent)] text-[var(--accent-text)]"
+        : "text-[var(--text-dim)] hover:bg-[var(--surface-3)] hover:text-[var(--text)]"
+    }`}
+  >
+    {children}
+  </button>
+);
+
+/** A thin vertical rule between groups in a horizontal bar. */
+export const BarDivider = () => <span aria-hidden="true" className="mx-1 h-4 w-px shrink-0 bg-[var(--border)]" />;
+
+/**
+ * A range slider with a typed value beside it. Double-click the label to
+ * reset, which is how image editors usually undo one adjustment.
+ */
+export const Slider = ({
+  label,
+  value,
+  onChange,
+  min,
+  max,
+  step = 1,
+  suffix,
+  resetTo,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+  min: number;
+  max: number;
+  step?: number;
+  suffix?: string;
+  resetTo?: number;
+}) => {
+  const id = useId();
+  const changed = resetTo !== undefined && value !== resetTo;
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center justify-between">
+        <label
+          htmlFor={id}
+          className={`text-[11px] font-medium ${changed ? "text-[var(--text)]" : "text-[var(--text-dim)]"}`}
+          title={resetTo !== undefined ? "Double-click to reset" : undefined}
+          onDoubleClick={() => resetTo !== undefined && onChange(resetTo)}
+        >
+          {label}
+        </label>
+        <span className="flex items-center gap-1">
+          <span className="text-[11px] tabular-nums text-[var(--text-dim)]">
+            {formatValue(value, 1)}
+            {suffix}
+          </span>
+          {changed && (
+            <button
+              type="button"
+              title={`Reset ${label.toLowerCase()}`}
+              aria-label={`Reset ${label.toLowerCase()}`}
+              onClick={() => onChange(resetTo as number)}
+              className="rounded px-1 text-[10px] text-[var(--text-faint)] hover:bg-[var(--surface-3)] hover:text-[var(--text)]"
+            >
+              ↺
+            </button>
+          )}
+        </span>
+      </div>
+      <input
+        id={id}
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="range-input w-full"
+      />
+    </div>
+  );
+};
+
+/**
+ * Progressive disclosure: secondary settings stay folded away until asked
+ * for, so each category shows its essentials first.
+ */
+export const Disclosure = ({
+  label = "More options",
+  children,
+  defaultOpen = false,
+}: {
+  label?: string;
+  children: ReactNode;
+  defaultOpen?: boolean;
+}) => {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="flex flex-col gap-3">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-1.5 self-start text-[11px] font-medium text-[var(--text-faint)] transition-colors hover:text-[var(--accent)]"
+      >
+        <span aria-hidden="true" className={`transition-transform ${open ? "rotate-90" : ""}`}>
+          ›
+        </span>
+        {open ? `Fewer options` : label}
+      </button>
+      {open && <div className="flex flex-col gap-3">{children}</div>}
+    </div>
+  );
+};

@@ -2,8 +2,12 @@ import type {
   AppState,
   Border,
   CustomFont,
+  EffectKind,
+  ImageCrop,
   LabelDesign,
   LabelElement,
+  LayerEffect,
+  LayerGroup,
   PrintSettings,
   Typography,
 } from "../types";
@@ -23,6 +27,11 @@ import {
   isRecord,
 } from "./sanitize";
 import { newId } from "./units";
+import { isCropped, MIN_CROP_FRACTION } from "./imageEdit";
+import { EFFECT_DEFS, effectDef, migrateAdjustments } from "./effects";
+import { SHAPE_KINDS } from "./shapes";
+import { RASTER_MAX_PX } from "./raster";
+import { canonicalize } from "./layers";
 
 export const STORAGE_KEY = "label-number-generator:state:v1";
 
@@ -33,6 +42,8 @@ export const MAX_COUNT = 5000;
 export const MAX_ELEMENTS = 200;
 export const MAX_DESIGNS = 100;
 export const MAX_FONTS = 12;
+export const MAX_GROUPS = 100;
+export const MAX_EFFECTS = 20;
 
 const BORDER_STYLES = [
   "none",
@@ -86,9 +97,86 @@ const normalizeTypography = (value: unknown): Typography => {
   };
 };
 
+/**
+ * A crop is four fractions of the full frame. Anything that would leave less
+ * than a sliver visible is rejected outright rather than rendering nothing.
+ */
+const normalizeCrop = (value: unknown): ImageCrop | undefined => {
+  if (!isRecord(value)) return undefined;
+  const inset = (n: unknown) => Math.min(Math.max(asNumber(n, 0), 0), 1);
+  const crop = {
+    left: inset(value.left),
+    top: inset(value.top),
+    right: inset(value.right),
+    bottom: inset(value.bottom),
+  };
+  if (1 - crop.left - crop.right < MIN_CROP_FRACTION) return undefined;
+  if (1 - crop.top - crop.bottom < MIN_CROP_FRACTION) return undefined;
+  return isCropped(crop) ? crop : undefined;
+};
+
+const EFFECT_KINDS = EFFECT_DEFS.map((d) => d.kind) as EffectKind[];
+
+const normalizeEffect = (value: unknown): LayerEffect | null => {
+  if (!isRecord(value)) return null;
+  const kind = asEnum(value.kind, EFFECT_KINDS, "brightness");
+  if (value.kind !== kind) return null;
+  const def = effectDef(kind);
+  const effect: LayerEffect = {
+    id: asString(value.id, newId(), 100) || newId(),
+    kind,
+    enabled: asBoolean(value.enabled, true),
+    amount: Math.min(Math.max(asNumber(value.amount, def.initial), def.min), def.max),
+  };
+  if (kind === "dropShadow" || kind === "glow") {
+    effect.offsetX = Math.min(Math.max(asNumber(value.offsetX, 0), -50), 50);
+    effect.offsetY = Math.min(Math.max(asNumber(value.offsetY, 0), -50), 50);
+    effect.radius = Math.min(asNonNegative(value.radius, 1), 50);
+    const color = typeof value.color === "string" && /^#[0-9a-f]{6}$/i.test(value.color) ? value.color : "#000000";
+    effect.color = color;
+  }
+  return effect;
+};
+
+/**
+ * The effect stack. Designs saved before stacks carry one `adjust` object
+ * instead; it is converted so they keep their look.
+ */
+const normalizeEffects = (value: Record<string, unknown>): { effects?: LayerEffect[]; opacity?: number } => {
+  if (Array.isArray(value.effects)) {
+    const effects = value.effects
+      .slice(0, MAX_EFFECTS)
+      .map(normalizeEffect)
+      .filter((e): e is LayerEffect => e !== null);
+    return effects.length ? { effects } : {};
+  }
+  if (isRecord(value.adjust)) {
+    const migrated = migrateAdjustments(value.adjust);
+    return {
+      ...(migrated.effects.length ? { effects: migrated.effects } : {}),
+      ...(migrated.opacity !== undefined ? { opacity: Math.min(Math.max(migrated.opacity, 0), 100) } : {}),
+    };
+  }
+  return {};
+};
+
+const normalizeGroup = (value: unknown): LayerGroup | null => {
+  if (!isRecord(value)) return null;
+  const id = asString(value.id, "", 100);
+  if (!id) return null;
+  const parentId = asString(value.parentId, "", 100);
+  return {
+    id,
+    name: asString(value.name, "Group", 120) || "Group",
+    visible: asBoolean(value.visible, true),
+    collapsed: asBoolean(value.collapsed, false),
+    ...(parentId ? { parentId } : {}),
+  };
+};
+
 const normalizeElement = (value: unknown): LabelElement | null => {
   if (!isRecord(value)) return null;
-  const type = asEnum(value.type, ["text", "number", "image", "shape"] as const, "text");
+  const type = asEnum(value.type, ["text", "number", "image", "shape", "raster"] as const, "text");
 
   const base = {
     id: asString(value.id, newId(), 100) || newId(),
@@ -99,6 +187,10 @@ const normalizeElement = (value: unknown): LabelElement | null => {
     height: Math.min(asPositive(value.height, 10), MAX_SIZE_MM),
     rotation: Math.min(Math.max(asNumber(value.rotation, 0), -360), 360),
     visible: asBoolean(value.visible, true),
+    ...(typeof value.groupId === "string" && value.groupId ? { groupId: value.groupId.slice(0, 100) } : {}),
+    ...(typeof value.opacity === "number" && Number.isFinite(value.opacity) && value.opacity !== 100
+      ? { opacity: Math.min(Math.max(value.opacity, 0), 100) }
+      : {}),
   };
 
   switch (type) {
@@ -118,20 +210,50 @@ const normalizeElement = (value: unknown): LabelElement | null => {
         padTo: Math.min(asInteger(value.padTo, 3, 0), 12),
         typography: normalizeTypography(value.typography),
       };
-    case "image":
+    case "image": {
+      const crop = normalizeCrop(value.crop);
+      const { effects, opacity } = normalizeEffects(value);
       return {
         ...base,
+        ...(opacity !== undefined && base.opacity === undefined ? { opacity } : {}),
         type: "image",
         src: asImageSrc(value.src, ""),
         fit: asEnum(value.fit, FITS, "contain"),
+        // Optional fields are only written when set, so older saves and the
+        // default case round-trip unchanged.
+        ...(crop ? { crop } : {}),
+        ...(effects ? { effects } : {}),
+        ...(value.flipX === true ? { flipX: true } : {}),
+        ...(value.flipY === true ? { flipY: true } : {}),
       };
-    case "shape":
+    }
+    case "shape": {
+      const shape = asEnum(value.shape, SHAPE_KINDS, "rectangle");
       return {
         ...base,
         type: "shape",
+        ...(shape !== "rectangle" ? { shape } : {}),
+        ...(typeof value.sides === "number" ? { sides: Math.min(Math.max(Math.round(value.sides), 3), 64) } : {}),
+        ...(typeof value.innerRadius === "number"
+          ? { innerRadius: Math.min(Math.max(value.innerRadius, 5), 95) }
+          : {}),
         fill: asCssValue(value.fill, "#e5e7eb"),
         border: normalizeBorder(value.border, { ...DEFAULT_BORDER, style: "none", width: 0 }),
       };
+    }
+    case "raster": {
+      const src = asImageSrc(value.src, "");
+      const { effects } = normalizeEffects(value);
+      return {
+        ...base,
+        type: "raster",
+        // Pixel layers only ever hold embedded PNG data, never a URL.
+        src: /^data:image\/png;base64,/i.test(src) ? src : "",
+        pxWidth: Math.min(Math.max(asInteger(value.pxWidth, 1, 1), 1), RASTER_MAX_PX),
+        pxHeight: Math.min(Math.max(asInteger(value.pxHeight, 1, 1), 1), RASTER_MAX_PX),
+        ...(effects ? { effects } : {}),
+      };
+    }
   }
 };
 
@@ -168,6 +290,14 @@ export const normalizeDesign = (value: unknown): LabelDesign | null => {
         .map(normalizeFont)
         .filter((f): f is CustomFont => f !== null)
     : [];
+  const rawGroups = Array.isArray(value.groups)
+    ? value.groups
+        .slice(0, MAX_GROUPS)
+        .map(normalizeGroup)
+        .filter((g): g is LayerGroup => g !== null)
+    : [];
+  // Repairs dangling group references, cycles and split groups.
+  const layers = canonicalize({ elements, groups: rawGroups });
 
   return {
     id: asString(value.id, newId(), 100) || newId(),
@@ -177,8 +307,10 @@ export const normalizeDesign = (value: unknown): LabelDesign | null => {
     unit: asEnum(value.unit, UNITS, "mm"),
     background: asCssValue(value.background, "#ffffff"),
     border: normalizeBorder(value.border),
-    elements,
+    elements: layers.elements,
     fonts,
+    // Only written when used, so older saves round-trip unchanged.
+    ...(layers.groups.length ? { groups: layers.groups } : {}),
   };
 };
 

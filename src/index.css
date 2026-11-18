@@ -138,6 +138,214 @@ input[type="number"] {
   -moz-appearance: textfield;
 }
 
+/* ---------- Menus ---------- */
+.menu-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.6rem 0.3rem 0.35rem;
+  border-radius: 5px;
+  font-size: 11.5px;
+  color: var(--text);
+  cursor: default;
+  user-select: none;
+  outline: none;
+}
+.menu-row:hover,
+.menu-row:focus,
+.menu-row[aria-expanded="true"] {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+.menu-row:hover kbd,
+.menu-row:focus kbd,
+.menu-row:hover span,
+.menu-row:focus span {
+  color: inherit;
+}
+.menu-row[aria-disabled="true"] {
+  opacity: 0.4;
+  background: transparent;
+  color: var(--text);
+}
+.menu-check {
+  display: inline-flex;
+  width: 14px;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.menu-pop {
+  animation: menu-in 90ms ease-out;
+}
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+}
+
+/* ---------- Canvas ---------- */
+.canvas-viewport {
+  background: var(--canvas-bg);
+}
+.canvas-viewport[data-backdrop="light"] {
+  background: #e4e7ec;
+}
+.canvas-viewport[data-backdrop="dark"] {
+  background: #0a0d11;
+}
+.canvas-viewport[data-backdrop="checker"] {
+  background-color: #d9dce1;
+  background-image: linear-gradient(45deg, #c4c8cf 25%, transparent 25%),
+    linear-gradient(-45deg, #c4c8cf 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #c4c8cf 75%),
+    linear-gradient(-45deg, transparent 75%, #c4c8cf 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+
+/* Layer edges: faint until hovered, so a busy label stays readable. */
+.layer-hit-edges {
+  outline: 1px dashed rgba(148, 163, 184, 0.45);
+}
+.layer-hit:hover {
+  outline: 1px solid var(--accent);
+}
+
+/* Transform handles sit centred on the box corner/edge they control. */
+.transform-handle,
+.crop-handle {
+  width: 9px;
+  height: 9px;
+  margin: -4.5px 0 0 -4.5px;
+  border-radius: 2px;
+  background: #fff;
+  border: 1.5px solid var(--accent);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
+.transform-handle:hover,
+.crop-handle:hover {
+  background: var(--accent);
+}
+.crop-handle {
+  width: 11px;
+  height: 11px;
+  margin: -5.5px 0 0 -5.5px;
+  border-color: #fff;
+  background: #111;
+}
+.crop-box {
+  outline: 1.5px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+}
+.crop-thirds {
+  background-image: linear-gradient(to right, rgba(255, 255, 255, 0.45) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.45) 1px, transparent 1px);
+  background-size: 33.333% 33.333%;
+  background-position: -1px -1px;
+}
+
+/* ---------- Hover tooltips (icon-only buttons) ---------- */
+.tip {
+  position: relative;
+}
+.tip::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 6px);
+  transform: translateX(-50%) translateY(-2px);
+  white-space: nowrap;
+  padding: 3px 7px;
+  border-radius: 5px;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--text);
+  background: var(--surface-3);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 90ms ease, transform 90ms ease;
+  z-index: 40;
+}
+.tip:hover::after,
+.tip:focus-visible::after {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+/* Footer tooltips open upwards, so they are not clipped by the dock. */
+.border-t .tip::after {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
+/* ---------- Layer drag and drop ---------- */
+.layer-row[draggable="true"] {
+  cursor: grab;
+}
+.drop-above::before,
+.drop-below::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  pointer-events: none;
+}
+.drop-above::before {
+  top: -2px;
+}
+.drop-below::before {
+  bottom: -2px;
+}
+
+/* ---------- Brush cursor ---------- */
+.brush-cursor {
+  position: absolute;
+  pointer-events: none;
+  border: 1px solid rgba(255, 255, 255, 0.95);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.7);
+  border-radius: 50%;
+}
+
+/* ---------- Range slider ---------- */
+.range-input {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 16px;
+  background: transparent;
+  cursor: pointer;
+}
+.range-input::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 99px;
+  background: var(--surface-3);
+}
+.range-input::-moz-range-track {
+  height: 3px;
+  border-radius: 99px;
+  background: var(--surface-3);
+}
+.range-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4.5px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--surface);
+}
+.range-input::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--surface);
+}
+
 /* The print sheet exists in the DOM at all times but is only shown on paper,
    so the editor and the output always render from the same component. */
 .print-sheet {

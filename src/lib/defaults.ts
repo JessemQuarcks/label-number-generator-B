@@ -8,6 +8,7 @@ import type {
   Typography,
 } from "../types";
 import { newId } from "./units";
+import { rasterPixelSize } from "./raster";
 
 export const DEFAULT_TYPOGRAPHY: Typography = {
   fontFamily: "Arial, Helvetica, sans-serif",
@@ -107,6 +108,19 @@ export const createElement = (
         name: "Shape",
         fill: "#e5e7eb",
         border: { ...NO_BORDER },
+      };
+    case "raster":
+      // A pixel layer covers the whole label, like a new Photoshop layer.
+      return {
+        ...base,
+        type: "raster",
+        name: "Layer",
+        x: 0,
+        y: 0,
+        width: design.width,
+        height: design.height,
+        src: "",
+        ...rasterPixelSize(design.width, design.height),
       };
   }
 };

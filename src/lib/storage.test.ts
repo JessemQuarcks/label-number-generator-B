@@ -216,3 +216,145 @@ describe("import", () => {
     expect(reimported).toEqual(original);
   });
 });
+
+describe("image crop and effects", () => {
+  const imageWith = (extra: Record<string, unknown>) =>
+    normalizeDesign({
+      name: "Img",
+      width: 100,
+      height: 50,
+      elements: [{ type: "image", src: "photo.png", width: 10, height: 10, ...extra }],
+    })!.elements[0];
+
+  it("round-trips a crop, an effect stack, opacity and flips", () => {
+    const original = design({
+      elements: [
+        {
+          id: "img",
+          type: "image",
+          name: "Photo",
+          x: 0,
+          y: 0,
+          width: 50,
+          height: 25,
+          rotation: 0,
+          visible: true,
+          opacity: 80,
+          src: "photo.png",
+          fit: "cover",
+          crop: { left: 0.1, top: 0, right: 0.2, bottom: 0.3 },
+          effects: [
+            { id: "e1", kind: "grayscale", enabled: true, amount: 100 },
+            { id: "e2", kind: "dropShadow", enabled: false, amount: 50, offsetX: 1, offsetY: 1, radius: 2, color: "#112233" },
+          ],
+          flipX: true,
+        },
+      ],
+    });
+    const reimported = parseImport(exportState([original], DEFAULT_PRINT)).designs[0];
+    expect(reimported).toEqual(original);
+  });
+
+  it("omits the optional fields when they are neutral, so old saves stay unchanged", () => {
+    const el = imageWith({ crop: { left: 0, top: 0, right: 0, bottom: 0 }, effects: [], flipX: false });
+    expect(el).not.toHaveProperty("crop");
+    expect(el).not.toHaveProperty("effects");
+    expect(el).not.toHaveProperty("flipX");
+  });
+
+  it("drops a crop that would leave nothing visible", () => {
+    expect(imageWith({ crop: { left: 0.6, right: 0.6, top: 0, bottom: 0 } })).not.toHaveProperty("crop");
+  });
+
+  it("clamps out-of-range insets and effect amounts, and drops unknown effects", () => {
+    const el = imageWith({
+      crop: { left: -1, top: 0.2, right: "x", bottom: 0 },
+      effects: [
+        { kind: "brightness", amount: 9999 },
+        { kind: "hue", amount: 720 },
+        { kind: "javascript", amount: 1 },
+      ],
+    });
+    expect(el.type === "image" && el.crop).toEqual({ left: 0, top: 0.2, right: 0, bottom: 0 });
+    const effects = el.type === "image" ? el.effects ?? [] : [];
+    expect(effects.map((e) => [e.kind, e.amount])).toEqual([
+      ["brightness", 300],
+      ["hue", 180],
+    ]);
+  });
+
+  it("converts the old single adjustments object into an effect stack", () => {
+    const el = imageWith({ adjust: { brightness: 120, grayscale: 100, contrast: 100, opacity: 40 } });
+    expect(el.opacity).toBe(40);
+    const effects = el.type === "image" ? el.effects ?? [] : [];
+    expect(effects.map((e) => [e.kind, e.amount])).toEqual([
+      ["brightness", 120],
+      ["grayscale", 100],
+    ]);
+  });
+});
+
+describe("groups, shapes and pixel layers", () => {
+  it("round-trips groups, shape kinds and a pixel layer", () => {
+    const original = design({
+      groups: [{ id: "g1", name: "Badge", visible: false, collapsed: true }],
+      elements: [
+        {
+          id: "s1",
+          type: "shape",
+          name: "Star",
+          x: 0,
+          y: 0,
+          width: 20,
+          height: 20,
+          rotation: 0,
+          visible: true,
+          groupId: "g1",
+          shape: "star",
+          sides: 6,
+          innerRadius: 40,
+          fill: "none",
+          border: { style: "solid", width: 0.5, color: "#000000", radius: 0 },
+        },
+        {
+          id: "r1",
+          type: "raster",
+          name: "Layer 1",
+          x: 0,
+          y: 0,
+          width: 120,
+          height: 60,
+          rotation: 0,
+          visible: true,
+          src: "data:image/png;base64,AAAA",
+          pxWidth: 1417,
+          pxHeight: 709,
+        },
+      ],
+    });
+    expect(parseImport(exportState([original], DEFAULT_PRINT)).designs[0]).toEqual(original);
+  });
+
+  it("drops references to groups that do not exist", () => {
+    const d = normalizeDesign({
+      name: "X",
+      elements: [{ type: "text", text: "hi", groupId: "ghost" }],
+      groups: [{ id: "unused", name: "Empty" }],
+    })!;
+    expect(d.elements[0].groupId).toBeUndefined();
+    expect(d).not.toHaveProperty("groups");
+  });
+
+  it("only accepts embedded PNG data on a pixel layer", () => {
+    const d = normalizeDesign({
+      name: "X",
+      elements: [{ type: "raster", src: "https://example.com/x.png", pxWidth: 10, pxHeight: 10 }],
+    })!;
+    expect(d.elements[0].type === "raster" && d.elements[0].src).toBe("");
+  });
+
+  it("rejects an unknown shape kind", () => {
+    const d = normalizeDesign({ name: "X", elements: [{ type: "shape", shape: "<script>" }] })!;
+    expect(d.elements[0]).not.toHaveProperty("shape");
+  });
+});

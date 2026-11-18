@@ -115,7 +115,10 @@ describe("persistence across a reload", () => {
   it("restores an added element and its content", async () => {
     const ui = render(<App />);
 
-    await userEvent.click(screen.getByRole("button", { name: /Add text/i }));
+    // New layers come from the tools or the Layer menu (no quick-add buttons).
+    await userEvent.click(screen.getByRole("menuitem", { name: "Layer" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "New layer" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: /^Text/ }));
     await setField("Content", "Batch GH");
     await waitForSave((s) =>
       s.designs.some((d) =>
@@ -138,9 +141,10 @@ describe("image imports", () => {
     const image = new File(["image data"], "citrus-label.png", { type: "image/png" });
     await userEvent.upload(input as HTMLInputElement, image);
 
+    // Importing an image creates (and opens) a new design in its own tab.
     expect(
-      await screen.findByRole("option", { name: /citrus-label \+ number/i })
-    ).toBeInTheDocument();
+      await screen.findByRole("tab", { name: /citrus-label \+ number/i })
+    ).toHaveAttribute("aria-selected", "true");
     expect(screen.getAllByRole("img", { name: "Label artwork" })[0]).toHaveAttribute(
       "src",
       "data:image/png;base64,aW1hZ2UgZGF0YQ=="
@@ -535,8 +539,8 @@ describe("numbering end to end", () => {
     render(<App />);
 
     // Start from a blank design so the only number element is the one we set up.
-    await userEvent.click(screen.getByRole("button", { name: "+ New" }));
-    await userEvent.click(screen.getByRole("button", { name: /Blank 120/ }));
+    await userEvent.click(screen.getByRole("button", { name: "New or open design" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: /Blank 120/ }));
     await userEvent.click(screen.getByRole("button", { name: /Select Serial number/ }));
 
     await setField("Prefix", "GH");

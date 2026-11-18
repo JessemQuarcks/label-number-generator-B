@@ -2,6 +2,11 @@ import type { CSSProperties } from "react";
 import type { Border, LabelDesign, LabelElement, Typography } from "../types";
 import { PX_PER_MM } from "../lib/units";
 import { formatNumber } from "../lib/numbering";
+import { imageContentStyle } from "../lib/imageEdit";
+import { effectsToCss } from "../lib/effects";
+import { isEffectivelyVisible } from "../lib/layers";
+import { dashFor, isOpenShape, isPathShape, shapePath } from "../lib/shapes";
+import type { LayerGroup, ShapeElement } from "../types";
 
 const mm = (value: number): string => `${value}mm`;
 
@@ -36,6 +41,9 @@ const typographyToCss = (t: Typography): CSSProperties => ({
 
 /** Absolute placement shared by every element type. */
 const frameStyle = (el: LabelElement): CSSProperties => ({
+  ...(el.opacity !== undefined && el.opacity !== 100 ? { opacity: el.opacity / 100 } : {}),
+  // Effects apply to the whole layer, after any crop.
+  ...("effects" in el && el.effects ? { filter: effectsToCss(el.effects) } : {}),
   position: "absolute",
   left: mm(el.x),
   top: mm(el.y),
@@ -47,15 +55,56 @@ const frameStyle = (el: LabelElement): CSSProperties => ({
   overflow: "hidden",
 });
 
+/**
+ * Non-rectangular shapes as SVG in a mm viewBox, so the stroke width is in
+ * mm like a CSS border. The path is inset by half the stroke, keeping the
+ * outline inside the box exactly as `box-sizing: border-box` does.
+ */
+const ShapeSvg = ({ el }: { el: ShapeElement }) => {
+  const kind = el.shape ?? "rectangle";
+  const stroked = el.border.style !== "none" && el.border.width > 0;
+  const open = isOpenShape(kind);
+  // Open shapes have no inside; give them a stroke even if none is set.
+  const strokeWidth = stroked ? el.border.width : open ? 0.5 : 0;
+  const d = shapePath(kind, el.width, el.height, {
+    inset: strokeWidth / 2,
+    sides: el.sides,
+    innerRadius: el.innerRadius,
+    cornerRadius: el.border.radius,
+  });
+  return (
+    <svg
+      width="100%"
+      height="100%"
+      viewBox={`0 0 ${el.width} ${el.height}`}
+      preserveAspectRatio="none"
+      style={{ display: "block", overflow: "visible" }}
+      aria-hidden="true"
+    >
+      <path
+        d={d}
+        fill={open || el.fill === "none" ? "none" : el.fill}
+        stroke={strokeWidth > 0 ? (stroked ? el.border.color : el.fill === "none" ? "#000000" : el.fill) : "none"}
+        strokeWidth={strokeWidth || undefined}
+        strokeDasharray={stroked ? dashFor(el.border.style, el.border.width) : undefined}
+        strokeLinecap={el.border.style === "dotted" || open ? "round" : "butt"}
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+};
+
 interface ElementViewProps {
   element: LabelElement;
   /** The serial number for the label this element is being drawn on. */
   number: number;
   hidePlaceholders: boolean;
+  groups?: LayerGroup[];
 }
 
-const ElementView = ({ element, number, hidePlaceholders }: ElementViewProps) => {
-  if (!element.visible) return null;
+const ElementView = ({ element, number, hidePlaceholders, groups }: ElementViewProps) => {
+  // A hidden group hides everything inside it.
+  if (!isEffectivelyVisible(element, groups)) return null;
   const frame = frameStyle(element);
 
   switch (element.type) {
@@ -103,23 +152,44 @@ const ElementView = ({ element, number, hidePlaceholders }: ElementViewProps) =>
           </div>
         );
       }
+      // The frame is the visible (cropped) region; the image inside is laid
+      // out over the full uncropped frame and clipped by it.
       return (
-        <img
-          src={element.src}
-          alt={element.name}
-          style={{ ...frame, objectFit: element.fit }}
-        />
+        <div style={frame} data-image-frame="">
+          <img src={element.src} alt={element.name} style={imageContentStyle(element)} />
+        </div>
       );
     case "shape":
+      if (isPathShape(element)) {
+        return (
+          <div style={{ ...frame, overflow: "visible" }}>
+            <ShapeSvg el={element} />
+          </div>
+        );
+      }
       return (
         <div
           style={{
             ...frame,
-            backgroundColor: element.fill,
+            // "none" is a real choice: no fill at all, the stroke still shows.
+            backgroundColor: element.fill === "none" ? "transparent" : element.fill,
             ...borderToCss(element.border),
             boxSizing: "border-box",
           }}
         />
+      );
+    case "raster":
+      // An empty pixel layer draws nothing, on screen or paper.
+      if (!element.src) return null;
+      return (
+        <div style={frame}>
+          <img
+            src={element.src}
+            alt={element.name}
+            draggable={false}
+            style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }}
+          />
+        </div>
       );
   }
 };
@@ -166,6 +236,7 @@ const Label = ({
           element={element}
           number={number}
           hidePlaceholders={hidePlaceholders}
+          groups={design.groups}
         />
       ))}
       {/* The border is drawn as an inset overlay rather than a CSS border on
