@@ -1,0 +1,7 @@
+# Core server dependencies (enough to run the server with the classical, CPU-only models).
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pillow>=10.0
+numpy>=1.26
+opencv-python-headless>=4.9
+tomli>=2.0; python_version < "3.11"

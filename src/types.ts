@@ -67,6 +67,42 @@ export interface ElementBase {
   groupId?: string;
   /** percent, 100 = fully opaque. Optional: older saves predate it. */
   opacity?: number;
+  /** A layer mask. Optional: older saves predate masks. */
+  mask?: LayerMask;
+}
+
+/**
+ * A non-destructive layer mask, as in Photoshop: white reveals the layer,
+ * black hides it, greys are partly see-through. It is a greyscale PNG
+ * stretched over the layer — over an image's full, uncropped frame, so
+ * re-cropping never shifts it, and over the element box for everything else.
+ */
+export interface LayerMask {
+  /** data:image/png;base64,… — opaque greyscale, used as a luminance mask. */
+  src: string;
+  pxWidth: number;
+  pxHeight: number;
+  /** Off shows the whole layer but keeps the mask for later. */
+  enabled: boolean;
+}
+
+/** What made a generated layer. Lets it be regenerated after a reload. */
+export type GenerativeKind =
+  | "fill"
+  | "replace"
+  | "remove"
+  | "expand"
+  | "generate"
+  | "similar"
+  | "edit";
+
+export interface GenerativeInfo {
+  kind: GenerativeKind;
+  /** The prompt or instruction, "" for prompt-free removal. */
+  prompt: string;
+  /** Model id on the local AI server. */
+  model?: string;
+  seed?: number;
 }
 
 /**
@@ -155,6 +191,8 @@ export interface ImageElement extends ElementBase {
   effects?: LayerEffect[];
   flipX?: boolean;
   flipY?: boolean;
+  /** Set on layers produced by the AI tools. */
+  generative?: GenerativeInfo;
 }
 
 export type ShapeKind =

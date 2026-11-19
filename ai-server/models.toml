@@ -1,0 +1,336 @@
+# label_ai model registry.
+#
+# [server]                 global settings
+# [profiles.<p>.defaults]  capability -> default model id for profile <p> (lite | standard | quality)
+# [models.<id>]            one model = an adapter (architecture) + options
+#
+# Reserved model keys: adapter, name, description, license, size, capabilities.
+# Everything else is passed to the adapter as options (repo, dtype, steps, max_side, ...).
+# Common options:
+#   repo          Hugging Face repo id (weights download lazily into the HF cache on first use)
+#   dtype         dtype on CUDA: float16 (default) | bfloat16 | float32
+#   mps_dtype     dtype on Apple MPS (default float16);  cpu_dtype: dtype on CPU (default float32)
+#   exclusive     true = unload every other heavy model before loading this one (huge models)
+#   requires      extra importable modules needed (on top of the adapter's own list)
+#   min_versions  { distribution = "x.y" } minimum package versions
+#
+# If a profile's default model is unavailable (python deps missing), the first *available*
+# model listed below for that capability is used - so neural models come first and the
+# classical CPU fallbacks last.
+
+[server]
+default_profile = "standard"
+max_loaded = 2          # heavy models kept in memory at once (LRU unload)
+
+# --------------------------------------------------------------------------- profiles
+
+[profiles.lite.defaults]          # CPU-friendly
+segment = "slimsam"
+subject = "birefnet-lite"
+segment_text = "clipseg"
+matte = "guided-filter"
+remove = "lama"
+inpaint = "sd15-inpaint"
+generate = "sd15"
+variations = "sd15"
+edit = "instruct-pix2pix"
+
+[profiles.standard.defaults]      # a mid-range GPU (8-16 GB VRAM)
+segment = "sam-vit-base"
+subject = "birefnet"
+segment_text = "clipseg"
+matte = "birefnet-matting"
+remove = "lama"
+inpaint = "sdxl-inpaint"
+generate = "flux-schnell"
+variations = "flux-schnell"
+edit = "instruct-pix2pix"
+
+[profiles.quality.defaults]       # a big GPU (24 GB+; Qwen-Image-Edit wants far more or offload)
+segment = "sam2.1-hiera-small"
+subject = "birefnet"
+segment_text = "grounded-sam"
+matte = "birefnet-matting"
+remove = "lama"
+inpaint = "flux-schnell-inpaint"
+generate = "flux-schnell"
+variations = "flux-schnell"
+edit = "qwen-image-edit"
+
+# --------------------------------------------------------------------------- segment (click / box)
+
+[models."sam-vit-base"]
+adapter = "sam"
+name = "Segment Anything (ViT-B)"
+description = "Meta SAM ViT-Base: click or box to select any object."
+license = "Apache-2.0"
+size = "375 MB"
+repo = "facebook/sam-vit-base"
+dtype = "float32"
+
+[models."sam2.1-hiera-small"]
+adapter = "sam2"
+name = "SAM 2.1 Hiera-S"
+description = "Meta SAM 2.1 (small): sharper masks than SAM 1. Needs transformers >= 4.56."
+license = "Apache-2.0"
+size = "185 MB"
+repo = "facebook/sam2.1-hiera-small"
+dtype = "float32"
+
+[models.slimsam]
+adapter = "sam"
+name = "SlimSAM-77 (lite)"
+description = "Pruned SAM (uniform 77%), very small and CPU friendly."
+license = "Apache-2.0"
+size = "39 MB"
+repo = "Zigeng/SlimSAM-uniform-77"
+dtype = "float32"
+
+# --------------------------------------------------------------------------- subject (salient object)
+
+[models.birefnet]
+adapter = "birefnet"
+name = "BiRefNet"
+description = "High-resolution dichotomous segmentation: select the main subject / remove background."
+license = "MIT"
+size = "445 MB"
+repo = "ZhengPeng7/BiRefNet"
+capabilities = ["subject"]
+resolution = 1024
+
+[models."birefnet-lite"]
+adapter = "birefnet"
+name = "BiRefNet lite"
+description = "Smaller BiRefNet (Swin-T backbone); faster, CPU friendly."
+license = "MIT"
+size = "180 MB"
+repo = "ZhengPeng7/BiRefNet_lite"
+capabilities = ["subject"]
+resolution = 1024
+
+# --------------------------------------------------------------------------- segment_text (prompted)
+
+[models.clipseg]
+adapter = "clipseg"
+name = "CLIPSeg"
+description = "Select by text (\"sky\", \"the bottle\"). Coarse but fast."
+license = "Apache-2.0"
+size = "605 MB"
+repo = "CIDAS/clipseg-rd64-refined"
+threshold = 0.35
+dtype = "float32"
+
+[models."grounded-sam"]
+adapter = "grounded_sam"
+name = "Grounded SAM (Grounding DINO tiny + SAM)"
+description = "Open-vocabulary detection boxes refined into precise masks by SAM."
+license = "Apache-2.0"
+size = "690 MB + 375 MB"
+repo = "IDEA-Research/grounding-dino-tiny"
+sam_repo = "facebook/sam-vit-base"
+sam_adapter = "sam"
+threshold = 0.35
+text_threshold = 0.25
+dtype = "float32"
+
+# --------------------------------------------------------------------------- matte (hair / fur edges)
+
+[models."birefnet-matting"]
+adapter = "birefnet"
+name = "BiRefNet matting"
+description = "BiRefNet trained for alpha matting; refines the unknown band around a selection."
+license = "MIT"
+size = "885 MB"
+repo = "ZhengPeng7/BiRefNet-matting"
+capabilities = ["matte"]
+resolution = 1024
+
+# --------------------------------------------------------------------------- remove (prompt-free)
+
+[models.lama]
+adapter = "lama"
+name = "LaMa (big-lama)"
+description = "Large-mask inpainting: erase objects without a prompt. TorchScript export."
+license = "Apache-2.0"
+size = "206 MB"
+repo = "fashn-ai/LaMa"
+filename = "big-lama.pt"
+# Alternative source (the IOPaint release of the same TorchScript export):
+# url = "https://github.com/Sanster/models/releases/download/add_big_lama/big-lama.pt"
+dtype = "float32"
+mps_dtype = "float32"
+max_side = 1024
+dilate = 6
+
+# --------------------------------------------------------------------------- inpaint (prompted)
+
+[models."sd15-inpaint"]
+adapter = "diffusion"
+family = "sd15"
+name = "Stable Diffusion 1.5 Inpainting"
+description = "Small, fast prompted inpainting (512 px native)."
+license = "CreativeML-OpenRAIL-M (commercial use allowed, use-based restrictions)"
+size = "2.1 GB"
+repo = "stable-diffusion-v1-5/stable-diffusion-inpainting"
+capabilities = ["inpaint"]
+variant = "fp16"
+steps = 30
+guidance = 7.5
+strength = 1.0
+min_vram_gb = 5
+model_offload_min_vram_gb = 3
+
+[models."sdxl-inpaint"]
+adapter = "diffusion"
+family = "sdxl"
+name = "SDXL 1.0 Inpainting 0.1"
+description = "High quality prompted inpainting at 1024 px."
+license = "CreativeML-OpenRAIL++-M (commercial use allowed, use-based restrictions)"
+size = "6.9 GB"
+repo = "diffusers/stable-diffusion-xl-1.0-inpainting-0.1"
+capabilities = ["inpaint"]
+variant = "fp16"
+vae = "madebyollin/sdxl-vae-fp16-fix"
+steps = 30
+guidance = 7.0
+strength = 0.99
+min_vram_gb = 12
+model_offload_min_vram_gb = 6
+
+[models."flux-schnell-inpaint"]
+adapter = "diffusion"
+family = "flux"
+name = "FLUX.1 [schnell] Inpaint"
+description = "FLUX.1-schnell via FluxInpaintPipeline (4 steps). Same weights as flux-schnell."
+license = "Apache-2.0"
+size = "34 GB"
+repo = "black-forest-labs/FLUX.1-schnell"
+capabilities = ["inpaint"]
+dtype = "bfloat16"
+steps = 4
+guidance = 0.0
+strength = 0.9
+max_sequence_length = 256
+offload = "auto"
+min_vram_gb = 36
+model_offload_min_vram_gb = 26
+exclusive = true
+requires = ["sentencepiece", "google.protobuf"]
+min_versions = { diffusers = "0.31" }
+
+# --------------------------------------------------------------------------- generate + variations
+
+[models."flux-schnell"]
+adapter = "diffusion"
+family = "flux"
+name = "FLUX.1 [schnell]"
+description = "Best open text-to-image at 4 steps; also img2img variations. Gated on HF: accept the (free) terms and `hf auth login`."
+license = "Apache-2.0"
+size = "34 GB"
+repo = "black-forest-labs/FLUX.1-schnell"
+capabilities = ["generate", "variations"]
+dtype = "bfloat16"
+steps = 4
+guidance = 0.0
+max_sequence_length = 256
+offload = "auto"            # auto | none | model | sequential
+min_vram_gb = 36            # >= this: everything on the GPU
+model_offload_min_vram_gb = 26   # >= this: model CPU offload, below: sequential offload (slow)
+exclusive = true
+requires = ["sentencepiece", "google.protobuf"]
+min_versions = { diffusers = "0.31" }
+
+[models.sdxl]
+adapter = "diffusion"
+family = "sdxl"
+name = "Stable Diffusion XL 1.0"
+description = "SDXL base 1.0 text-to-image and img2img variations at 1024 px."
+license = "CreativeML-OpenRAIL++-M (commercial use allowed, use-based restrictions)"
+size = "7.1 GB"
+repo = "stabilityai/stable-diffusion-xl-base-1.0"
+capabilities = ["generate", "variations"]
+variant = "fp16"
+vae = "madebyollin/sdxl-vae-fp16-fix"
+steps = 30
+guidance = 6.0
+min_vram_gb = 12
+model_offload_min_vram_gb = 6
+
+[models.sd15]
+adapter = "diffusion"
+family = "sd15"
+name = "Stable Diffusion 1.5"
+description = "Small and fast text-to-image / img2img (512 px native); runs on CPU (slowly)."
+license = "CreativeML-OpenRAIL-M (commercial use allowed, use-based restrictions)"
+size = "2.1 GB"
+repo = "stable-diffusion-v1-5/stable-diffusion-v1-5"
+capabilities = ["generate", "variations"]
+variant = "fp16"
+steps = 30
+guidance = 7.5
+min_vram_gb = 5
+model_offload_min_vram_gb = 3
+
+# --------------------------------------------------------------------------- edit (instructions)
+
+[models."qwen-image-edit"]
+adapter = "qwen_image_edit"
+name = "Qwen-Image-Edit"
+description = "State-of-the-art instruction editing (incl. text in images). Very large: ~58 GB weights; needs ~64 GB VRAM or CPU offload (and lots of RAM)."
+license = "Apache-2.0"
+size = "58 GB"
+repo = "Qwen/Qwen-Image-Edit"
+dtype = "bfloat16"
+steps = 30
+guidance = 4.0
+offload = "auto"
+min_vram_gb = 64
+model_offload_min_vram_gb = 44
+exclusive = true
+
+[models."instruct-pix2pix"]
+adapter = "instruct_pix2pix"
+name = "InstructPix2Pix"
+description = "Edit with instructions (\"make it snowy\"). SD 1.5 based, small and fast."
+license = "MIT (weights derived from SD 1.5, CreativeML-OpenRAIL-M use restrictions apply)"
+size = "2.1 GB"
+repo = "timbrooks/instruct-pix2pix"
+variant = "fp16"
+steps = 20
+guidance = 7.5
+image_guidance = 1.5
+min_vram_gb = 5
+model_offload_min_vram_gb = 3
+
+# --------------------------------------------------------------------------- classical CPU fallbacks (no torch)
+
+[models.grabcut]
+adapter = "grabcut"
+name = "GrabCut (basic)"
+description = "OpenCV GrabCut seeded from your box / clicks. No AI model needed."
+license = "Apache-2.0 (OpenCV)"
+max_side = 1024
+iterations = 5
+
+[models."grabcut-center"]
+adapter = "grabcut_center"
+name = "Center subject (basic)"
+description = "OpenCV GrabCut seeded with an inset rectangle. Works for centred subjects on plain backgrounds."
+license = "Apache-2.0 (OpenCV)"
+inset = 0.05
+
+[models."guided-filter"]
+adapter = "guided_filter"
+name = "Guided filter (basic)"
+description = "Edge-aware refinement of the selection boundary (colour guided filter on a trimap band)."
+license = "MIT (this project)"
+eps = 0.0001
+
+[models."opencv-telea"]
+adapter = "opencv_inpaint"
+name = "OpenCV Telea (basic)"
+description = "Fast-marching inpainting. Good for thin scratches/text, smears large areas."
+license = "Apache-2.0 (OpenCV)"
+method = "telea"
+radius = 5
+dilate = 3

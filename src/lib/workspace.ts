@@ -4,6 +4,10 @@ import type { BrushSettings } from "./brush";
 import { BLEND_MODES, BRUSH_MAX, BRUSH_MIN, BRUSH_TIPS, DEFAULT_BRUSH } from "./brush";
 import { DEFAULT_INNER_RADIUS, DEFAULT_SIDES, SHAPE_KINDS } from "./shapes";
 import { asBoolean, asEnum, asNumber, asString, isRecord } from "./sanitize";
+import type { SelectionMode } from "./selection/mask";
+import type { Capability } from "./ai/types";
+import { CAPABILITIES } from "./ai/types";
+import { DEFAULT_ENDPOINT } from "./ai/http";
 
 /**
  * The editor's own layout and preferences — which panels are open, where
@@ -12,7 +16,7 @@ import { asBoolean, asEnum, asNumber, asString, isRecord } from "./sanitize";
  */
 export const WORKSPACE_KEY = "label-number-generator:workspace:v1";
 
-export type PanelId = "layers" | "properties" | "brush" | "fonts" | "print";
+export type PanelId = "layers" | "properties" | "brush" | "fonts" | "print" | "ai";
 export type DockSide = "left" | "right";
 
 export const PANEL_TITLES: Record<PanelId, string> = {
@@ -21,6 +25,7 @@ export const PANEL_TITLES: Record<PanelId, string> = {
   brush: "Brush settings",
   fonts: "Fonts",
   print: "Print run",
+  ai: "Generative AI",
 };
 
 export interface PanelPrefs {
@@ -43,6 +48,38 @@ export interface ToolDefaults {
     border: Pick<Border, "style" | "width" | "color" | "radius">;
   };
   brush: BrushSettings;
+  select: SelectToolDefaults;
+}
+
+/** Options shared by the selection tools and the Remove tool. */
+export interface SelectToolDefaults {
+  /** What a plain drag/click does; Shift / Alt override it per gesture. */
+  mode: SelectionMode;
+  /** Marquee and lasso feather, mm. */
+  feather: number;
+  antiAlias: boolean;
+  /** Magic wand tolerance, 0–255. */
+  tolerance: number;
+  contiguous: boolean;
+  /** Analyse every visible layer rather than just the selected one. */
+  sampleAll: boolean;
+  /** Quick selection brush diameter, mm. */
+  size: number;
+  /** Quick selection sends its strokes to the AI segmenter when available. */
+  aiAssist: boolean;
+  /** Remove tool brush diameter, mm. */
+  removeSize: number;
+}
+
+/** The local AI server and which of its models to use. */
+export interface AiPrefs {
+  endpoint: string;
+  /** Model per capability; missing = the server's default. */
+  models: Partial<Record<Capability, string>>;
+  /** Results per generative request (Photoshop shows three). */
+  count: number;
+  /** Things to keep out of generated images. */
+  negativePrompt: string;
 }
 
 export interface WorkspacePrefs {
@@ -67,6 +104,7 @@ export interface WorkspacePrefs {
   /** Align against the other selected layers, or against the label. */
   alignTarget: "selection" | "canvas";
   toolDefaults: ToolDefaults;
+  ai: AiPrefs;
 }
 
 export const DOCK_MIN = 200;
@@ -89,6 +127,24 @@ export const DEFAULT_TOOL_DEFAULTS: ToolDefaults = {
     border: { style: "none", width: 0.3, color: "#000000", radius: 0 },
   },
   brush: { ...DEFAULT_BRUSH },
+  select: {
+    mode: "new",
+    feather: 0,
+    antiAlias: true,
+    tolerance: 32,
+    contiguous: true,
+    sampleAll: true,
+    size: 4,
+    aiAssist: true,
+    removeSize: 4,
+  },
+};
+
+export const DEFAULT_AI: AiPrefs = {
+  endpoint: DEFAULT_ENDPOINT,
+  models: {},
+  count: 3,
+  negativePrompt: "",
 };
 
 export const defaultWorkspace = (): WorkspacePrefs => ({
@@ -99,8 +155,9 @@ export const defaultWorkspace = (): WorkspacePrefs => ({
     // Opened from the brush options bar ("Brush settings…").
     brush: { visible: false, collapsed: false, dock: "right" },
     print: { visible: true, collapsed: false, dock: "right" },
+    ai: { visible: true, collapsed: true, dock: "right" },
   },
-  panelOrder: ["layers", "fonts", "properties", "brush", "print"],
+  panelOrder: ["layers", "fonts", "properties", "ai", "brush", "print"],
   dockWidth: { left: 248, right: 304 },
   showToolbar: true,
   showOptionsBar: true,
@@ -114,13 +171,14 @@ export const defaultWorkspace = (): WorkspacePrefs => ({
   propertiesTab: {},
   alignTarget: "selection",
   toolDefaults: structuredCloneSafe(DEFAULT_TOOL_DEFAULTS),
+  ai: structuredCloneSafe(DEFAULT_AI),
 });
 
 function structuredCloneSafe<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
-const PANEL_IDS: PanelId[] = ["layers", "properties", "brush", "fonts", "print"];
+const PANEL_IDS: PanelId[] = ["layers", "properties", "brush", "fonts", "print", "ai"];
 const BORDER_STYLES: BorderStyle[] = [
   "none",
   "solid",
@@ -225,7 +283,49 @@ export const normalizeWorkspace = (value: unknown): WorkspacePrefs => {
         },
       },
       brush: normalizeBrush(td.brush),
+      select: normalizeSelect(td.select),
     },
+    ai: normalizeAi(value.ai),
+  };
+};
+
+export const normalizeSelect = (value: unknown): SelectToolDefaults => {
+  const d = DEFAULT_TOOL_DEFAULTS.select;
+  if (!isRecord(value)) return { ...d };
+  const num = (k: keyof SelectToolDefaults, min: number, max: number) =>
+    Math.min(Math.max(asNumber(value[k], d[k] as number), min), max);
+  return {
+    mode: asEnum(value.mode, ["new", "add", "subtract", "intersect"] as const, d.mode),
+    feather: num("feather", 0, 50),
+    antiAlias: asBoolean(value.antiAlias, d.antiAlias),
+    tolerance: Math.round(num("tolerance", 0, 255)),
+    contiguous: asBoolean(value.contiguous, d.contiguous),
+    sampleAll: asBoolean(value.sampleAll, d.sampleAll),
+    size: num("size", 0.2, 100),
+    aiAssist: asBoolean(value.aiAssist, d.aiAssist),
+    removeSize: num("removeSize", 0.2, 100),
+  };
+};
+
+const CAPABILITY_IDS = CAPABILITIES.map((c) => c.id);
+
+export const normalizeAi = (value: unknown): AiPrefs => {
+  if (!isRecord(value)) return { ...DEFAULT_AI, models: {} };
+  const endpoint = asString(value.endpoint, DEFAULT_AI.endpoint, 300).trim();
+  const models: Partial<Record<Capability, string>> = {};
+  if (isRecord(value.models)) {
+    for (const [k, v] of Object.entries(value.models)) {
+      if (CAPABILITY_IDS.includes(k as Capability) && typeof v === "string" && v && v.length <= 100) {
+        models[k as Capability] = v;
+      }
+    }
+  }
+  return {
+    // Only plain http(s) URLs (or host:port) — never a javascript: or data: URL.
+    endpoint: /^(https?:\/\/)?[\w.\-[\]:]+(\/[\w.\-/]*)?$/i.test(endpoint) ? endpoint : DEFAULT_AI.endpoint,
+    models,
+    count: Math.round(Math.min(Math.max(asNumber(value.count, DEFAULT_AI.count), 1), 4)),
+    negativePrompt: asString(value.negativePrompt, "", 500),
   };
 };
 
@@ -373,6 +473,7 @@ export const useWorkspace = () => {
         // layout" should not lose work-in-progress context.
         openDesignIds: p.openDesignIds,
         toolDefaults: p.toolDefaults,
+        ai: p.ai,
       })),
     []
   );

@@ -113,9 +113,11 @@ export const useDesigns = () => {
   const canUndo = historyTick >= 0 && past.current.length > 0;
   const canRedo = historyTick >= 0 && future.current.length > 0;
 
+  /** The last save was refused by the browser (storage full). */
+  const [saveFailed, setSaveFailed] = useState(false);
   useEffect(() => {
     window.clearTimeout(saveTimer.current);
-    saveTimer.current = window.setTimeout(() => saveState(state), 300);
+    saveTimer.current = window.setTimeout(() => setSaveFailed(!saveState(state)), 300);
     return () => window.clearTimeout(saveTimer.current);
   }, [state]);
 
@@ -564,5 +566,6 @@ export const useDesigns = () => {
     redo,
     canUndo,
     canRedo,
+    saveFailed,
   };
 };

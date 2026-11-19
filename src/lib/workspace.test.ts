@@ -23,7 +23,7 @@ describe("workspace preferences", () => {
   it("keeps every panel in the order list, even if the stored one is partial", () => {
     const ws = normalizeWorkspace({ panelOrder: ["print", "bogus"] });
     expect(ws.panelOrder[0]).toBe("print");
-    expect([...ws.panelOrder].sort()).toEqual(["brush", "fonts", "layers", "print", "properties"]);
+    expect([...ws.panelOrder].sort()).toEqual(["ai", "brush", "fonts", "layers", "print", "properties"]);
   });
 
   it("rejects tool defaults that are not plain colours or sane sizes", () => {
@@ -33,5 +33,28 @@ describe("workspace preferences", () => {
     expect(ws.toolDefaults.text.color).toBe("#000000");
     expect(ws.toolDefaults.text.fontSize).toBe(1);
     expect(ws.toolDefaults.shape.fill).toBe("#123456");
+  });
+
+  it("keeps AI settings sane: a plain URL, known capabilities, 1–4 results", () => {
+    const ws = normalizeWorkspace({
+      ai: {
+        endpoint: "javascript:alert(1)",
+        models: { inpaint: "sdxl-inpaint", bogus: "x", segment: 42 },
+        count: 99,
+        negativePrompt: "blurry",
+      },
+    });
+    expect(ws.ai.endpoint).toBe("http://127.0.0.1:8765");
+    expect(ws.ai.models).toEqual({ inpaint: "sdxl-inpaint" });
+    expect(ws.ai.count).toBe(4);
+    expect(ws.ai.negativePrompt).toBe("blurry");
+    expect(normalizeWorkspace({ ai: { endpoint: "gpu-box.local:9000" } }).ai.endpoint).toBe("gpu-box.local:9000");
+  });
+
+  it("clamps selection tool options", () => {
+    const ws = normalizeWorkspace({ toolDefaults: { select: { mode: "explode", tolerance: 900, feather: -2 } } });
+    expect(ws.toolDefaults.select.mode).toBe("new");
+    expect(ws.toolDefaults.select.tolerance).toBe(255);
+    expect(ws.toolDefaults.select.feather).toBe(0);
   });
 });

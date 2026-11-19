@@ -1,0 +1,19 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+# local model caches (if HF_HOME / TORCH_HOME are pointed inside this folder)
+models/
+.cache/
+hf-cache/
+huggingface/
+*.safetensors
+*.ckpt
+*.pt
+*.onnx

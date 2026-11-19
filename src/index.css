@@ -311,6 +311,37 @@ input[type="number"] {
   border-radius: 50%;
 }
 
+/* ---------- Pixel selection ---------- */
+
+/* Marching ants: a white line under a black dashed one that crawls. */
+.ants-base {
+  stroke: #fff;
+  stroke-width: 1px;
+}
+.ants-march {
+  stroke: #000;
+  stroke-width: 1px;
+  stroke-dasharray: 4 4;
+  animation: ants-march 0.6s linear infinite;
+}
+@keyframes ants-march {
+  to {
+    stroke-dashoffset: -8;
+  }
+}
+.poly-vertex {
+  fill: #fff;
+  stroke: #000;
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
+}
+.stroke-select {
+  stroke: rgba(56, 132, 255, 0.35);
+}
+.stroke-remove {
+  stroke: rgba(255, 64, 160, 0.45);
+}
+
 /* ---------- Range slider ---------- */
 .range-input {
   -webkit-appearance: none;
@@ -386,5 +417,21 @@ input[type="number"] {
   *::after {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+/* ---------- AI activity ---------- */
+.ai-spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1.5px solid var(--accent);
+  border-right-color: transparent;
+  animation: ai-spin 0.8s linear infinite;
+}
+@keyframes ai-spin {
+  to {
+    transform: rotate(360deg);
   }
 }

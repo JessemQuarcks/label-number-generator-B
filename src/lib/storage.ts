@@ -3,6 +3,9 @@ import type {
   Border,
   CustomFont,
   EffectKind,
+  GenerativeInfo,
+  GenerativeKind,
+  LayerMask,
   ImageCrop,
   LabelDesign,
   LabelElement,
@@ -32,6 +35,7 @@ import { EFFECT_DEFS, effectDef, migrateAdjustments } from "./effects";
 import { SHAPE_KINDS } from "./shapes";
 import { RASTER_MAX_PX } from "./raster";
 import { canonicalize } from "./layers";
+import { isMaskSrc, MASK_MAX_PX } from "./masks";
 
 export const STORAGE_KEY = "label-number-generator:state:v1";
 
@@ -160,6 +164,33 @@ const normalizeEffects = (value: Record<string, unknown>): { effects?: LayerEffe
   return {};
 };
 
+/** A layer mask is only kept if it is an embedded PNG of sane size. */
+const normalizeMask = (value: unknown): LayerMask | undefined => {
+  if (!isRecord(value) || !isMaskSrc(value.src)) return undefined;
+  return {
+    src: value.src.trim(),
+    pxWidth: Math.min(Math.max(asInteger(value.pxWidth, 1, 1), 1), MASK_MAX_PX),
+    pxHeight: Math.min(Math.max(asInteger(value.pxHeight, 1, 1), 1), MASK_MAX_PX),
+    enabled: asBoolean(value.enabled, true),
+  };
+};
+
+const GENERATIVE_KINDS: GenerativeKind[] = ["fill", "replace", "remove", "expand", "generate", "similar", "edit"];
+
+const normalizeGenerative = (value: unknown): GenerativeInfo | undefined => {
+  if (!isRecord(value)) return undefined;
+  const kind = asEnum(value.kind, GENERATIVE_KINDS, "fill");
+  if (value.kind !== kind) return undefined;
+  const model = asString(value.model, "", 100);
+  const seed = asNumber(value.seed, Number.NaN);
+  return {
+    kind,
+    prompt: asString(value.prompt, "", 1000),
+    ...(model ? { model } : {}),
+    ...(Number.isInteger(seed) && seed >= 0 ? { seed } : {}),
+  };
+};
+
 const normalizeGroup = (value: unknown): LayerGroup | null => {
   if (!isRecord(value)) return null;
   const id = asString(value.id, "", 100);
@@ -191,6 +222,10 @@ const normalizeElement = (value: unknown): LabelElement | null => {
     ...(typeof value.opacity === "number" && Number.isFinite(value.opacity) && value.opacity !== 100
       ? { opacity: Math.min(Math.max(value.opacity, 0), 100) }
       : {}),
+    ...(() => {
+      const mask = normalizeMask(value.mask);
+      return mask ? { mask } : {};
+    })(),
   };
 
   switch (type) {
@@ -225,6 +260,10 @@ const normalizeElement = (value: unknown): LabelElement | null => {
         ...(effects ? { effects } : {}),
         ...(value.flipX === true ? { flipX: true } : {}),
         ...(value.flipY === true ? { flipY: true } : {}),
+        ...(() => {
+          const generative = normalizeGenerative(value.generative);
+          return generative ? { generative } : {};
+        })(),
       };
     }
     case "shape": {
@@ -355,11 +394,18 @@ export const loadState = (): AppState | null => {
   }
 };
 
-export const saveState = (state: AppState): void => {
+/**
+ * Save to localStorage. Returns false when the browser refuses — usually the
+ * storage quota (a few MB), which embedded images and AI results can fill —
+ * so the editor can warn before work is lost on reload.
+ */
+export const saveState = (state: AppState): boolean => {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    return true;
   } catch {
     // Quota exceeded or storage blocked (private mode) — designs stay in memory.
+    return false;
   }
 };
 

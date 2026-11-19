@@ -12,7 +12,8 @@ import type {
 } from "../types";
 import type { ToolId } from "../lib/tools";
 import { toolById } from "../lib/tools";
-import type { ToolDefaults } from "../lib/workspace";
+import type { SelectToolDefaults, ToolDefaults } from "../lib/workspace";
+import type { SelectionMode } from "../lib/selection/mask";
 import type { CategoryId } from "../lib/properties";
 import { FONT_WEIGHTS } from "../lib/fonts";
 import { CROP_RATIOS, isCropped } from "../lib/imageEdit";
@@ -67,6 +68,16 @@ export interface OptionsBarProps {
   autoSelect: "layer" | "group";
   onAutoSelect: (mode: "layer" | "group") => void;
   onShowBrushPanel: () => void;
+  select: {
+    hasSelection: boolean;
+    busy: string | null;
+    /** AI selection is available (server up with a model). */
+    canSubject: boolean;
+    canSegment: boolean;
+    onSelectSubject: () => void;
+    onSelectAndMask: () => void;
+    onDeselect: () => void;
+  };
   view: {
     grid: boolean;
     snap: boolean;
@@ -145,12 +156,61 @@ const OptionsBar = ({
   autoSelect,
   onAutoSelect,
   onShowBrushPanel,
+  select,
 }: OptionsBarProps) => {
   const def = toolById(tool);
   const [shapeMenu, setShapeMenu] = useState(false);
   const [presetMenu, setPresetMenu] = useState(false);
   const brush = toolDefaults.brush;
   const setBrush = (patch: Partial<BrushSettings>) => onToolDefaults("brush", patch);
+  const sel = toolDefaults.select;
+  const setSel = (patch: Partial<SelectToolDefaults>) => onToolDefaults("select", patch);
+
+  /** New / Add / Subtract / Intersect, with Photoshop's modifier keys in the tooltips. */
+  const modeButtons = (
+    <span role="group" aria-label="Selection mode" className="flex items-center gap-0.5">
+      {(
+        [
+          ["new", "▢", "New selection"],
+          ["add", "+", "Add to selection (hold Shift)"],
+          ["subtract", "−", "Subtract from selection (hold Alt)"],
+          ["intersect", "∩", "Intersect with selection (hold Shift+Alt)"],
+        ] as [SelectionMode, string, string][]
+      ).map(([mode, glyph, title]) => (
+        <ToolButton key={mode} size="sm" title={title} pressed={sel.mode === mode} onClick={() => setSel({ mode })}>
+          <span aria-hidden="true" className="text-[13px] font-semibold leading-none">
+            {glyph}
+          </span>
+        </ToolButton>
+      ))}
+    </span>
+  );
+
+  const sampleAll = (
+    <Toggle label="Sample all layers" checked={sel.sampleAll} onChange={(sampleAll) => setSel({ sampleAll })} />
+  );
+
+  /** Select subject + Select and Mask, at the end of every selection tool's bar. */
+  const selectionActions = (
+    <>
+      <BarDivider />
+      <Button
+        onClick={select.onSelectSubject}
+        disabled={!select.canSubject || !!select.busy}
+        title={select.canSubject ? "AI: select the main subject (Select ▸ Subject)" : "Needs the local AI server — see the Generative AI panel"}
+      >
+        <Icon name="subject" size={12} /> Select subject
+      </Button>
+      <Button onClick={select.onSelectAndMask} disabled={!select.hasSelection} title="Refine edges, hair and feathering (Ctrl+Alt+R)">
+        <Icon name="refine" size={12} /> Select and Mask…
+      </Button>
+      {select.busy && (
+        <span role="status" className="flex items-center gap-1 text-[11px] text-[var(--text-dim)]">
+          <span aria-hidden="true" className="ai-spinner" /> {select.busy}…
+        </span>
+      )}
+    </>
+  );
 
   const content = (): ReactNode => {
     switch (tool) {
@@ -508,6 +568,79 @@ const OptionsBar = ({
           </>
         );
       }
+
+      case "marquee-rect":
+      case "marquee-ellipse":
+      case "lasso":
+      case "lasso-poly":
+        return (
+          <>
+            {modeButtons}
+            <BarDivider />
+            <InlineNumber label="Feather" suffix="mm" value={sel.feather} min={0} max={50} step={0.1} onChange={(feather) => setSel({ feather })} />
+            <Toggle label="Anti-alias" checked={sel.antiAlias} onChange={(antiAlias) => setSel({ antiAlias })} />
+            {selectionActions}
+          </>
+        );
+
+      case "magic-wand":
+        return (
+          <>
+            {modeButtons}
+            <BarDivider />
+            <InlineNumber label="Tolerance" value={sel.tolerance} min={0} max={255} integer onChange={(tolerance) => setSel({ tolerance })} />
+            <Toggle label="Anti-alias" checked={sel.antiAlias} onChange={(antiAlias) => setSel({ antiAlias })} />
+            <Toggle label="Contiguous" checked={sel.contiguous} onChange={(contiguous) => setSel({ contiguous })} />
+            {sampleAll}
+            {selectionActions}
+          </>
+        );
+
+      case "quick-select":
+        return (
+          <>
+            {modeButtons}
+            <BarDivider />
+            <InlineNumber label="Size" suffix="mm" value={sel.size} min={0.2} max={100} step={0.5} onChange={(size) => setSel({ size })} />
+            <Toggle label="AI assist" checked={sel.aiAssist} onChange={(aiAssist) => setSel({ aiAssist })} />
+            {(!sel.aiAssist || !select.canSegment) && (
+              <InlineNumber label="Tolerance" value={sel.tolerance} min={0} max={255} integer onChange={(tolerance) => setSel({ tolerance })} />
+            )}
+            {sampleAll}
+            {selectionActions}
+          </>
+        );
+
+      case "object-select":
+        return (
+          <>
+            {modeButtons}
+            <BarDivider />
+            <span className="text-[11px] text-[var(--text-dim)]">
+              {select.canSegment ? "Click an object, or drag a box around it" : "Needs the local AI server (Generative AI panel)"}
+            </span>
+            {sampleAll}
+            {selectionActions}
+          </>
+        );
+
+      case "remove":
+        return (
+          <>
+            <InlineNumber
+              label="Size"
+              suffix="mm"
+              value={sel.removeSize}
+              min={0.2}
+              max={100}
+              step={0.5}
+              onChange={(removeSize) => setSel({ removeSize })}
+            />
+            <span className="text-[11px] text-[var(--text-dim)]">
+              Paint over what to remove — each stroke becomes its own layer you can hide or delete.
+            </span>
+          </>
+        );
 
       case "crop": {
         if (!crop.session) {

@@ -76,7 +76,23 @@ export type IconName =
   | "burst"
   | "cross"
   | "drop"
-  | "grip";
+  | "grip"
+  | "marqueeRect"
+  | "marqueeEllipse"
+  | "lasso"
+  | "lassoPoly"
+  | "objectSelect"
+  | "quickSelect"
+  | "magicWand"
+  | "remove"
+  | "sparkle"
+  | "mask"
+  | "subject"
+  | "invertSelection"
+  | "refine"
+  | "deselect"
+  | "expand"
+  | "server";
 
 const PATHS: Record<IconName, ReactNode> = {
   move: <path d="M3 2.5l9 4-3.8 1.3L6.9 11.7z M8.3 8.1l3.4 3.4" />,
@@ -202,6 +218,71 @@ const PATHS: Record<IconName, ReactNode> = {
       <circle cx="10" cy="8" r="0.7" fill="currentColor" />
       <circle cx="6" cy="12" r="0.7" fill="currentColor" />
       <circle cx="10" cy="12" r="0.7" fill="currentColor" />
+    </>
+  ),
+  marqueeRect: <rect x="2.5" y="3.5" width="11" height="9" strokeDasharray="2 1.6" />,
+  marqueeEllipse: <ellipse cx="8" cy="8" rx="5.8" ry="4.6" strokeDasharray="2 1.6" />,
+  lasso: (
+    <path d="M5 11.5C2.6 10.6 1.8 8.6 2.6 6.6 3.6 4 7 2.6 10 3.1c2.8.5 4.1 2.6 3.3 4.7-.9 2.3-4.2 3.4-7.2 3.1 M5 11.5c-.4 1.4.4 2.4 1.6 2.6" />
+  ),
+  lassoPoly: <path d="M3 12l1.5-8 6-1.5 3 5-4 4.5z M3 12l-.8 2" strokeDasharray="2 1.4" />,
+  objectSelect: (
+    <>
+      <rect x="2" y="2" width="12" height="12" rx="1" strokeDasharray="2 1.6" />
+      <path d="M6 10.5c0-2 1-4.5 2.5-4.5S11 8 11 10.5z" />
+    </>
+  ),
+  quickSelect: (
+    <>
+      <path d="M9.5 2.5l4 4-5.5 5.5-4-4z M4 8l-1.6 1.6c-.6.6-.6 1.6 0 2.2l1.8 1.8c.6.6 1.6.6 2.2 0L8 12" />
+      <circle cx="3" cy="3" r="1.2" strokeDasharray="1.2 1" />
+    </>
+  ),
+  magicWand: (
+    <path d="M2.5 13.5l7-7 M8.5 5.5l2 2 M11 1.5v2 M13.5 4.5h-2 M13 2l-1.4 1.4 M8.5 1.8l.6 1.2 M14.2 7l-1.2-.6" />
+  ),
+  remove: (
+    <>
+      <path d="M3.2 9.2l6-6a2 2 0 012.8 0l.8.8a2 2 0 010 2.8l-6 6a2 2 0 01-2.8 0l-.8-.8a2 2 0 010-2.8z" />
+      <path d="M6.5 6.5l3 3 M7.8 8.2h.1 M6.8 9.4h.1 M9 7h.1" />
+    </>
+  ),
+  sparkle: (
+    <path d="M7 1.8l1.2 3.5 3.5 1.2-3.5 1.2L7 11.2 5.8 7.7 2.3 6.5l3.5-1.2z M12.3 9.5l.6 1.6 1.6.6-1.6.6-.6 1.6-.6-1.6-1.6-.6 1.6-.6z" />
+  ),
+  mask: (
+    <>
+      <rect x="2" y="3" width="12" height="10" rx="1.2" />
+      <circle cx="8" cy="8" r="3" fill="currentColor" fillOpacity={0.35} />
+    </>
+  ),
+  subject: (
+    <>
+      <rect x="1.8" y="1.8" width="12.4" height="12.4" rx="1" strokeDasharray="2 1.6" />
+      <circle cx="8" cy="6" r="2" />
+      <path d="M4.5 12.5c.4-2.2 1.8-3.4 3.5-3.4s3.1 1.2 3.5 3.4" />
+    </>
+  ),
+  invertSelection: (
+    <>
+      <rect x="2" y="2" width="12" height="12" rx="1" />
+      <path d="M2 14L14 2" />
+      <path d="M2.5 13.5L2 2h12z" fill="currentColor" fillOpacity={0.3} stroke="none" />
+    </>
+  ),
+  refine: <path d="M2.5 13.5c2-1 3-3 3.6-5.2C6.8 5.6 8.6 3 11 2.5 M7 13.5c1.5-1 2.4-2.6 3-4.4.5-1.6 1.6-3 3.5-3.6 M2.5 9.5c1.6-.6 2.6-2 3.1-3.6" />,
+  deselect: (
+    <>
+      <rect x="2.5" y="3.5" width="11" height="9" strokeDasharray="2 1.6" />
+      <path d="M6 6l4 4 M10 6l-4 4" />
+    </>
+  ),
+  expand: <path d="M5.5 5.5h5v5h-5z M2 6V2h4 M10 2h4v4 M14 10v4h-4 M6 14H2v-4" />,
+  server: (
+    <>
+      <rect x="2.5" y="2.5" width="11" height="4.5" rx="1" />
+      <rect x="2.5" y="9" width="11" height="4.5" rx="1" />
+      <path d="M5 4.8h.1 M5 11.3h.1" />
     </>
   ),
 };

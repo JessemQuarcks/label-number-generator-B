@@ -2,7 +2,11 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { ImageElement, LabelElement, NumberElement } from "./types";
 import { Button, NumberInput, PrintSheet } from "./components";
 import Canvas from "./components/Canvas";
-import type { CreatableType, CropSession } from "./components/Canvas";
+import type { CreatableType, CropSession, PaintTarget } from "./components/Canvas";
+import AiPanel from "./components/AiPanel";
+import TaskBar from "./components/TaskBar";
+import { DescribeDialog, ExpandDialog, ModifyDialog, SelectAndMaskPanel } from "./components/AiDialogs";
+import type { RefineOutput } from "./components/AiDialogs";
 import LayerList from "./components/LayerList";
 import Properties from "./components/Properties";
 import Toolbar from "./components/Toolbar";
@@ -29,7 +33,21 @@ import { useFontsReady } from "./lib/useFontsReady";
 import { findMissingFonts } from "./lib/fontAvailability";
 import { FONT_OPTIONS } from "./lib/fonts";
 import type { ToolId } from "./lib/tools";
-import { toolById, toolForKey } from "./lib/tools";
+import { familyForKey, familyOf, isSelectionTool, nextInFamily, TOOL_FAMILIES, toolById, toolForKey } from "./lib/tools";
+import { useAi } from "./lib/ai/useAi";
+import { useGenerative } from "./lib/ai/useGenerative";
+import { SKY_PROMPT, useSelection } from "./lib/selection/useSelection";
+import type { ModifyKind } from "./lib/selection/useSelection";
+import type { AddMaskKind } from "./lib/layerOps";
+import {
+  applyMaskToRaster,
+  buildMask,
+  clearRasterPixels,
+  hideSelectionInMask,
+  invertMask as invertMaskOf,
+  layerViaCopy as copySelectedPixels,
+} from "./lib/layerOps";
+import { maskFrame, maskPixelSize, toGrey } from "./lib/masks";
 import type { DockSide, PanelId, ToolDefaults } from "./lib/workspace";
 import { DEFAULT_TOOL_DEFAULTS, useWorkspace } from "./lib/workspace";
 import type { CategoryId } from "./lib/properties";
@@ -63,9 +81,11 @@ import { nextShape, shapeDef } from "./lib/shapes";
 
 const shapeLabel = (kind: Parameters<typeof shapeDef>[0]) => shapeDef(kind).label;
 import { stepBrushSize } from "./lib/brush";
+import type { BrushSettings } from "./lib/brush";
 import {
   buildCanvasMenu,
   buildLayerMenu,
+  buildMaskMenu,
   buildMenuBar,
   buildToolMenu,
   newDesignItems,
@@ -125,6 +145,7 @@ function App() {
     redo,
     canUndo,
     canRedo,
+    saveFailed,
   } = designs;
 
   const fontsReady = useFontsReady(activeDesign);
@@ -151,7 +172,20 @@ function App() {
   const [status, setStatus] = useState<Status>(null);
   const [printing, setPrinting] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
-  const [dialog, setDialog] = useState<"appearance" | "shortcuts" | null>(null);
+  const [dialog, setDialog] = useState<
+    | "appearance"
+    | "shortcuts"
+    | "describe"
+    | { kind: "modify"; modify: ModifyKind }
+    | { kind: "expand"; id: string }
+    | null
+  >(null);
+  /** The tool each family slot (marquees, lassos, selection tools) shows. */
+  const [familyTools, setFamilyTools] = useState<Record<string, ToolId>>(() =>
+    Object.fromEntries(TOOL_FAMILIES.map((f) => [f.id, f.tools[0]]))
+  );
+  /** The layer whose mask (rather than pixels) the brush paints on. */
+  const [maskTarget, setMaskTarget] = useState<string | null>(null);
   const [crop, setCrop] = useState<CropSession | null>(null);
   const [cropRatioKey, setCropRatioKey] = useState("free");
   const [focusContentNonce, setFocusContentNonce] = useState(0);
@@ -171,8 +205,41 @@ function App() {
   const notify = useCallback((tone: "info" | "error", message: string) => {
     setStatus({ tone, message });
     window.clearTimeout(statusTimer.current);
-    statusTimer.current = window.setTimeout(() => setStatus(null), 3500);
+    statusTimer.current = window.setTimeout(() => setStatus(null), tone === "error" ? 6000 : 3500);
   }, []);
+
+  /* ---------------------------------------------------------------------
+   * AI, pixel selection and generative editing
+   * ------------------------------------------------------------------ */
+
+  const ai = useAi(ws.ai);
+  const setAiPrefs = (patch: Partial<typeof ws.ai>) => updateWs((p) => ({ ai: { ...p.ai, ...patch } }));
+  const sel = useSelection({
+    design: activeDesign,
+    layer: selectedCount === 1 ? selected : null,
+    prefs: ws.toolDefaults.select,
+    ai,
+    previewNumber: state.print.startNumber,
+    notify,
+  });
+  const gen = useGenerative({
+    design: activeDesign,
+    layer: selectedCount === 1 ? selected : null,
+    selection: sel.hasSelection ? sel.selection : null,
+    ai,
+    prefs: ws.ai,
+    previewNumber: state.print.startNumber,
+    addElement: (type, overrides) => addElement(type, overrides),
+    patchElement,
+    notify,
+  });
+
+  // Painting on a mask only lasts while that layer is the one selected.
+  const maskLayer =
+    maskTarget && selected?.id === maskTarget && selectedCount === 1 && selected.mask ? selected : null;
+  useEffect(() => {
+    if (maskTarget && !maskLayer) setMaskTarget(null);
+  }, [maskTarget, maskLayer]);
 
   /* ---------------------------------------------------------------------
    * Zoom & viewport
@@ -333,6 +400,8 @@ function App() {
   };
 
   const setTool = (next: ToolId) => {
+    const family = familyOf(next);
+    if (family) setFamilyTools((f) => (f[family.id] === next ? f : { ...f, [family.id]: next }));
     if (next === tool) return;
     // Leaving the crop tool keeps the crop, as switching tools does in
     // desktop editors; Esc is the way to throw it away.
@@ -617,14 +686,26 @@ function App() {
   const brush = ws.toolDefaults.brush;
   const setBrush = (patch: Partial<typeof brush>) => setToolDefaults("brush", patch);
 
-  /** The pixel layer a stroke paints on: the selected one, or a new one. */
-  const beginPaint = (erase: boolean): RasterElement | null => {
+  /**
+   * What a stroke paints on: the targeted layer mask (in greys — white
+   * reveals, black hides, the eraser paints the background colour), the
+   * selected pixel layer, or a new one.
+   */
+  const beginPaint = (erase: boolean): PaintTarget | null => {
+    if (maskLayer?.mask) {
+      const frame = maskFrame(maskLayer);
+      const grey = toGrey(erase ? brush.secondaryColor : brush.color);
+      const settings: BrushSettings = { ...brush, color: grey, secondaryColor: grey, blendMode: "normal", protectTransparency: false, fgBgJitter: 0, hueJitter: 0, saturationJitter: 0, brightnessJitter: 0 };
+      // Paint at full mask resolution, even on a small uniform "Reveal all" mask.
+      const { pxWidth, pxHeight } = maskPixelSize(frame);
+      return { kind: "mask", element: maskLayer, frame, pxWidth, pxHeight, src: maskLayer.mask.src, settings };
+    }
     if (selected?.type === "raster" && selectedCount === 1) {
       if (!isLayerShown(selected)) {
         notify("error", `"${selected.name}" is hidden — show it to paint on it.`);
         return null;
       }
-      return selected;
+      return { kind: "layer", element: selected };
     }
     if (erase) {
       notify("info", "Select a pixel layer to erase from.");
@@ -632,8 +713,114 @@ function App() {
     }
     const created = newPixelLayer();
     if (created) notify("info", `Painting on a new pixel layer, "${created.name}".`);
-    return created;
+    return created ? { kind: "layer", element: created } : null;
   };
+
+  const commitPaint = (target: PaintTarget, src: string) => {
+    if (target.kind === "layer") {
+      patchElement(target.element.id, { src } as Partial<LabelElement>);
+      return;
+    }
+    const current = activeDesign.elements.find((e) => e.id === target.element.id);
+    if (current?.mask) {
+      patchElement(current.id, { mask: { ...current.mask, src, pxWidth: target.pxWidth, pxHeight: target.pxHeight } });
+    }
+  };
+
+  /* ---------- layer masks ---------- */
+
+  const maskTargetLayer = () => (selectedCount === 1 ? selected : null);
+
+  const addMask = async (kind: AddMaskKind) => {
+    const el = maskTargetLayer();
+    if (!el) return notify("info", "Select one layer to mask.");
+    const mask = await buildMask(el, kind, sel.hasSelection ? sel.selection : null);
+    if (!mask) return notify("info", "Make a selection first.");
+    patchElement(el.id, { mask });
+    if (kind === "reveal-selection" || kind === "hide-selection") sel.deselect();
+  };
+
+  /** The Layers panel's mask button: from the selection if there is one, else reveal all. */
+  const addMaskQuick = () => void addMask(sel.hasSelection ? "reveal-selection" : "reveal-all");
+
+  const toggleMask = (id = maskTargetLayer()?.id) => {
+    const el = activeDesign.elements.find((e) => e.id === id);
+    if (el?.mask) patchElement(el.id, { mask: { ...el.mask, enabled: !el.mask.enabled } });
+  };
+
+  const invertMask = async () => {
+    const el = maskTargetLayer();
+    if (!el?.mask) return;
+    const mask = await invertMaskOf(el);
+    if (mask) patchElement(el.id, { mask });
+  };
+
+  const applyMask = async () => {
+    const el = maskTargetLayer();
+    if (el?.type !== "raster" || !el.mask) return;
+    const src = await applyMaskToRaster(el);
+    if (!src) return notify("error", "Couldn't apply the mask in this browser.");
+    patchElement(el.id, { src, mask: undefined } as Partial<LabelElement>);
+    setMaskTarget(null);
+  };
+
+  const deleteMask = () => {
+    const el = maskTargetLayer();
+    if (!el?.mask) return;
+    patchElement(el.id, { mask: undefined });
+    setMaskTarget(null);
+  };
+
+  const editMask = (id = maskTargetLayer()?.id) => {
+    const el = activeDesign.elements.find((e) => e.id === id);
+    if (!el?.mask) return;
+    setSelectedId(el.id);
+    setMaskTarget(el.id);
+    if (tool !== "brush" && tool !== "eraser") setTool("brush");
+    notify("info", `Painting on the mask of "${el.name}": white reveals, black hides. Click the layer's name to paint pixels again.`);
+  };
+
+  /** Delete with a pixel selection: clear pixels on a pixel layer, hide them (via the mask) on anything else. */
+  const clearSelectedPixels = async () => {
+    const el = maskTargetLayer();
+    const s = sel.selection;
+    if (!el || !s) return notify("info", "Select one layer to delete pixels from.");
+    if (el.type === "raster" && !maskLayer) {
+      const src = await clearRasterPixels(el, s);
+      if (src) patchElement(el.id, { src } as Partial<LabelElement>);
+      return;
+    }
+    patchElement(el.id, { mask: await hideSelectionInMask(el, s) });
+  };
+
+  const layerViaCopy = async () => {
+    if (!sel.selection || !sel.hasSelection) return;
+    const overrides = await copySelectedPixels(activeDesign, sel.selection, selectedCount === 1 ? selected : null, state.print.startNumber);
+    if (!overrides) return notify("error", "Couldn't copy those pixels in this browser.");
+    if (!addElement("image", overrides as Partial<LabelElement>)) notify("error", "This design has reached its layer limit.");
+  };
+
+  /** Select and Mask ▸ OK. */
+  const finishRefine = async (output: RefineOutput) => {
+    const result = sel.closeRefine(true);
+    if (!result) return;
+    const el = maskTargetLayer();
+    if (output === "selection" || !el) {
+      sel.setSelection(result);
+      return;
+    }
+    if (output === "mask") {
+      const mask = await buildMask(el, "reveal-selection", result);
+      if (mask) patchElement(el.id, { mask });
+      sel.deselect();
+      return;
+    }
+    const overrides = await copySelectedPixels(activeDesign, result, el, state.print.startNumber);
+    if (overrides) addElement("image", overrides as Partial<LabelElement>);
+    sel.deselect();
+  };
+
+  const selectedPixelLayer = selectedCount === 1 && selected && (selected.type === "image" || selected.type === "raster") ? selected : null;
 
   const isLayerShown = (el: LabelElement) => {
     if (!el.visible) return false;
@@ -676,6 +863,11 @@ function App() {
   /* ---------------------------------------------------------------------
    * Menus
    * ------------------------------------------------------------------ */
+
+  const openAiPanel = () => {
+    revealPanel("ai");
+    if (ai.status === "offline") notify("info", "Start the local AI server to use generative tools — see the Generative AI panel.");
+  };
 
   const cmd: MenuCommands = {
     newDesign: (preset: Preset) => {
@@ -754,6 +946,34 @@ function App() {
     resetWorkspace,
     shortcuts: () => setDialog("shortcuts"),
     setTool,
+
+    selectAllPixels: sel.selectAll,
+    deselectPixels: sel.deselect,
+    reselect: sel.reselect,
+    inverse: sel.invert,
+    selectSubject: () => sel.selectSubject("new"),
+    selectBackground: () => sel.selectSubject("new", true),
+    selectSky: () => sel.selectByText(SKY_PROMPT, "new"),
+    selectByDescription: () => setDialog("describe"),
+    selectAndMask: () => void sel.openRefine(),
+    modifySelection: (modify) => sel.hasSelection && setDialog({ kind: "modify", modify }),
+    loadLayerPixels: () => selected && void sel.loadLayerPixels(selected),
+    loadLayerMask: () => selected && void sel.loadLayerMask(selected),
+    layerViaCopy: () => void layerViaCopy(),
+
+    addMask: (kind) => void addMask(kind),
+    toggleMask: () => toggleMask(),
+    invertMask: () => void invertMask(),
+    applyMask: () => void applyMask(),
+    deleteMask,
+    editMask: () => (maskLayer ? setMaskTarget(null) : editMask()),
+
+    generativeFill: () => openAiPanel(),
+    generativeRemove: () => void gen.remove(),
+    generativeExpand: () => selected?.type === "image" && setDialog({ kind: "expand", id: selected.id }),
+    removeBackground: () => selectedPixelLayer && void gen.removeBackground(selectedPixelLayer),
+    generateSimilar: () => selectedPixelLayer && void gen.similar(selectedPixelLayer),
+    generateImage: () => openAiPanel(),
   };
 
   const menuCtx: MenuContext = {
@@ -771,6 +991,10 @@ function App() {
     workspace: ws,
     tool,
     cmd,
+    hasPixelSelection: sel.hasSelection,
+    canReselect: sel.canReselect,
+    aiCan: ai.can,
+    maskTarget: maskLayer?.id ?? null,
   };
 
   const openContextMenu = (event: React.MouseEvent, items: ContextMenuState["items"], label: string) => {
@@ -780,19 +1004,24 @@ function App() {
 
   // The context menu reads the selection after onSelect has run, so build it
   // on the next render rather than from this render's (stale) closure.
-  const [pendingMenu, setPendingMenu] = useState<{ x: number; y: number; target: "layer" | "canvas" } | null>(
+  const [pendingMenu, setPendingMenu] = useState<{ x: number; y: number; target: "layer" | "canvas" | "mask" } | null>(
     null
   );
   useEffect(() => {
     if (!pendingMenu) return;
-    const items = pendingMenu.target === "layer" ? buildLayerMenu(menuCtx) : buildCanvasMenu(menuCtx);
+    const items =
+      pendingMenu.target === "layer"
+        ? buildLayerMenu(menuCtx)
+        : pendingMenu.target === "mask"
+          ? buildMaskMenu(menuCtx)
+          : buildCanvasMenu(menuCtx);
     setPendingMenu(null);
     if (items.length) {
       setContextMenu({
         x: pendingMenu.x,
         y: pendingMenu.y,
         items,
-        label: pendingMenu.target === "layer" ? "Layer actions" : "Canvas actions",
+        label: pendingMenu.target === "layer" ? "Layer actions" : pendingMenu.target === "mask" ? "Mask actions" : "Canvas actions",
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -822,6 +1051,14 @@ function App() {
         if (lower === "y") return redo(), true;
         if (lower === "p") return void handlePrint(), true;
         if (lower === "o") return importRef.current?.click(), true;
+        // Pixel selection. Ctrl+A / Ctrl+D act on pixels while a selection
+        // tool is active (as in Photoshop) and on layers otherwise.
+        if (event.code === "KeyR" && event.altKey) return void sel.openRefine(), true;
+        if (lower === "d" && event.shiftKey) return sel.reselect(), true;
+        if (lower === "i" && event.shiftKey) return sel.invert(), true;
+        if (lower === "j") return void layerViaCopy(), true;
+        if (lower === "a" && isSelectionTool(tool)) return sel.selectAll(), true;
+        if (lower === "d" && isSelectionTool(tool)) return sel.deselect(), true;
         if (lower === "a") return selectAll(), true;
         if (lower === "d") return selectedCount > 0 && duplicateElements(selectedIds), true;
         if (lower === "g" && event.shiftKey) return ungroupSelected(), true;
@@ -849,7 +1086,10 @@ function App() {
 
     if (key === "Escape") {
       if (contextMenu) setContextMenu(null);
+      else if (sel.refine) sel.closeRefine(false);
+      else if (ai.job) ai.cancel();
       else if (crop) setCrop(null);
+      else if (sel.hasSelection) sel.deselect();
       else setSelection([]);
       return;
     }
@@ -858,9 +1098,20 @@ function App() {
       commitCrop();
       return;
     }
+    if ((key === "Delete" || key === "Backspace") && sel.hasSelection) {
+      // With pixels selected, Delete works on pixels, never on whole layers.
+      event.preventDefault();
+      void clearSelectedPixels();
+      return;
+    }
     if ((key === "Delete" || key === "Backspace") && selectedCount > 0) {
       event.preventDefault();
       deleteSelection();
+      return;
+    }
+    if (key === "F6" && event.shiftKey) {
+      event.preventDefault();
+      if (sel.hasSelection) setDialog({ kind: "modify", modify: "feather" });
       return;
     }
     if (key === "?") return setDialog("shortcuts");
@@ -871,6 +1122,13 @@ function App() {
         : event.code === "BracketLeft" || key === "[" || key === "{"
           ? -1
           : 0;
+    if ((tool === "quick-select" || tool === "remove") && bracket) {
+      const field = tool === "remove" ? "removeSize" : "size";
+      const current = ws.toolDefaults.select[field];
+      const next = Math.min(100, Math.max(0.2, Math.round(current * (bracket > 0 ? 1.25 : 0.8) * 10) / 10));
+      setToolDefaults("select", { [field]: next });
+      return;
+    }
     if ((tool === "brush" || tool === "eraser") && bracket) {
       const dir = bracket as 1 | -1;
       if (event.shiftKey) setBrush({ hardness: Math.min(Math.max(brush.hardness + dir * 25, 0), 100) });
@@ -878,6 +1136,13 @@ function App() {
       return;
     }
     if (event.repeat) return;
+    // M, L and W pick a tool family's current tool; with Shift they cycle it.
+    const family = familyForKey(key);
+    if (family) {
+      const current = familyOf(tool)?.id === family.id ? tool : familyTools[family.id] ?? family.tools[0];
+      setTool(event.shiftKey ? nextInFamily(current) : current);
+      return;
+    }
     // Shift+U cycles the Shape tool through its shapes.
     if (event.shiftKey && key.toLowerCase() === "u") {
       const next = nextShape(ws.toolDefaults.shape.kind);
@@ -950,6 +1215,17 @@ function App() {
     return () => window.removeEventListener("paste", onPaste);
   }, []);
 
+  // Embedded pictures and AI results can outgrow the browser's storage. Say
+  // so at once: otherwise the work is silently gone after a reload.
+  useEffect(() => {
+    if (saveFailed) {
+      notify(
+        "error",
+        "This browser's storage is full, so recent changes are not saved. Export your designs (File ▸ Export) or delete unused image layers."
+      );
+    }
+  }, [saveFailed, notify]);
+
   // Missing fonts are easy to overlook, so surface the Fonts panel when one
   // appears. It stays collapsible afterwards.
   const hasMissingFonts = missingFonts.length > 0;
@@ -993,7 +1269,10 @@ function App() {
               elements={activeDesign.elements}
               groups={activeDesign.groups ?? []}
               selectedIds={selectedIds}
-              onSelectIds={setSelection}
+              onSelectIds={(ids) => {
+                setMaskTarget(null);
+                setSelection(ids);
+              }}
               onToggleVisible={toggleVisible}
               onToggleCollapse={(gid) => {
                 const g = (activeDesign.groups ?? []).find((x) => x.id === gid);
@@ -1017,6 +1296,19 @@ function App() {
               onEffectDuplicate={copyEffect}
               onEffectDelete={removeEffect}
               onEffectOpen={openEffects}
+              maskTarget={maskLayer?.id ?? null}
+              onMaskClick={(eid, e) => {
+                const el = activeDesign.elements.find((x) => x.id === eid);
+                if (!el?.mask) return;
+                if (e.shiftKey) return toggleMask(eid);
+                if (e.ctrlKey || e.metaKey) return void sel.loadLayerMask(el, e.altKey ? "subtract" : "new");
+                editMask(eid);
+              }}
+              onMaskContextMenu={(e, eid) => {
+                if (!selectedIds.includes(eid) || selectedIds.length !== 1) setSelection([eid]);
+                setPendingMenu({ x: e.clientX, y: e.clientY, target: "mask" });
+              }}
+              onAddMask={addMaskQuick}
               onEffectContextMenu={(e, eid, fxId) => {
                 const el = activeDesign.elements.find((x) => x.id === eid);
                 const fx = el && supportsEffects(el) ? el.effects?.find((f) => f.id === fxId) : undefined;
@@ -1087,6 +1379,25 @@ function App() {
           id,
           collapsed: p.collapsed,
           content: <BrushPanel brush={brush} onChange={setBrush} />,
+        };
+      case "ai":
+        return {
+          id,
+          collapsed: p.collapsed,
+          subtitle: ai.job ? ai.job.label : ai.status === "online" ? undefined : ai.status === "checking" ? "connecting" : "offline",
+          content: (
+            <AiPanel
+              ai={ai}
+              gen={gen}
+              prefs={ws.ai}
+              onPrefs={setAiPrefs}
+              hasSelection={sel.hasSelection}
+              selected={selectedCount === 1 ? selected : null}
+              labelAspect={activeDesign.width / activeDesign.height}
+              onExpand={(eid) => setDialog({ kind: "expand", id: eid })}
+              onSelectSubject={() => sel.selectSubject("new")}
+            />
+          ),
         };
       case "fonts":
         return {
@@ -1188,7 +1499,9 @@ function App() {
 
   const hint = crop
     ? "Drag the handles to crop · drag inside to reposition · Enter applies · Esc cancels"
-    : toolById(effectiveTool).hint;
+    : maskLayer && (effectiveTool === "brush" || effectiveTool === "eraser")
+      ? `Painting on the mask of "${maskLayer.name}" · white (brush colour) reveals, black hides · X swaps · click the layer name to paint pixels`
+      : toolById(effectiveTool).hint;
 
   return (
     <>
@@ -1314,6 +1627,15 @@ function App() {
               onClear: () => patchSelectedImage((el) => clearCrop(el)),
             }}
             view={{ grid: showGrid, snap, onGrid: setShowGrid, onSnap: setSnap }}
+            select={{
+              hasSelection: sel.hasSelection,
+              busy: sel.busy,
+              canSubject: ai.can("subject"),
+              canSegment: ai.can("segment"),
+              onSelectSubject: () => sel.selectSubject("new"),
+              onSelectAndMask: () => void sel.openRefine(),
+              onDeselect: sel.deselect,
+            }}
           />
         )}
 
@@ -1321,6 +1643,7 @@ function App() {
           {ws.showToolbar && (
             <Toolbar
               tool={tool}
+              familyTools={familyTools}
               shapeKind={ws.toolDefaults.shape.kind}
               colors={{
                 foreground: brush.color,
@@ -1346,7 +1669,7 @@ function App() {
                           ? setToolDefaults(t, DEFAULT_TOOL_DEFAULTS[t])
                           : undefined
                       ),
-                  t === "shape" ? "Shapes" : "Tool actions"
+                  t === "shape" ? "Shapes" : familyOf(t)?.label ?? "Tool actions"
                 )
               }
             />
@@ -1365,7 +1688,7 @@ function App() {
                 newMenu={newDesignItems(menuCtx)}
               />
             )}
-            <div className="min-h-0 flex-1">
+            <div className="relative min-h-0 flex-1">
               <Canvas
                 design={activeDesign}
                 previewNumber={state.print.startNumber}
@@ -1393,8 +1716,53 @@ function App() {
                 autoSelect={autoSelect}
                 brush={brush}
                 onBeginPaint={beginPaint}
-                onCommitPaint={(eid, src) => patchElement(eid, { src } as Partial<LabelElement>)}
+                onCommitPaint={commitPaint}
+                selection={{
+                  outline: sel.outline,
+                  grid: { width: sel.size.width, height: sel.size.height },
+                  busy: !!sel.busy,
+                  refine: sel.refine
+                    ? { selection: sel.refine.preview, view: sel.refine.view, opacity: sel.refine.opacity }
+                    : null,
+                }}
+                selectOptions={{
+                  mode: ws.toolDefaults.select.mode,
+                  size: ws.toolDefaults.select.size,
+                  removeSize: ws.toolDefaults.select.removeSize,
+                }}
+                onSelectionGesture={(g) => void sel.handleGesture(g)}
+                onRemoveStroke={(points, diameterMm) => void gen.remove({ points, diameterMm })}
               />
+              {sel.refine && (
+                <SelectAndMaskPanel
+                  session={sel.refine}
+                  canMatte={ai.can("matte")}
+                  busy={!!sel.busy || !!ai.job}
+                  hasLayer={selectedCount === 1 && !!selected}
+                  onChange={sel.patchRefine}
+                  onRefineHair={() => void sel.refineHair()}
+                  onCancel={() => sel.closeRefine(false)}
+                  onApply={(output) => void finishRefine(output)}
+                />
+              )}
+              {!sel.refine && (
+                <TaskBar
+                  ai={ai}
+                  hasSelection={sel.hasSelection}
+                  busy={sel.busy}
+                  selected={selectedCount === 1 ? selected : null}
+                  onFill={(prompt) => void gen.fill(prompt, "fill")}
+                  onRemove={() => void gen.remove()}
+                  onRefine={() => void sel.openRefine()}
+                  onInvert={sel.invert}
+                  onMask={() => void addMask("reveal-selection")}
+                  onDeselect={sel.deselect}
+                  onSelectSubject={() => sel.selectSubject("new")}
+                  onRemoveBackground={() => selectedPixelLayer && void gen.removeBackground(selectedPixelLayer)}
+                  onSimilar={() => selectedPixelLayer && void gen.similar(selectedPixelLayer)}
+                  onExpand={() => selected?.type === "image" && setDialog({ kind: "expand", id: selected.id })}
+                />
+              )}
             </div>
           </main>
 
@@ -1443,6 +1811,26 @@ function App() {
           />
         )}
         {dialog === "shortcuts" && <ShortcutsDialog onClose={() => setDialog(null)} />}
+        {dialog === "describe" && (
+          <DescribeDialog onSelect={(prompt) => sel.selectByText(prompt, "new")} onClose={() => setDialog(null)} />
+        )}
+        {typeof dialog === "object" && dialog?.kind === "modify" && (
+          <ModifyDialog kind={dialog.modify} onApply={sel.modify} onClose={() => setDialog(null)} />
+        )}
+        {typeof dialog === "object" &&
+          dialog?.kind === "expand" &&
+          (() => {
+            const el = activeDesign.elements.find((e) => e.id === dialog.id);
+            if (el?.type !== "image") return null;
+            return (
+              <ExpandDialog
+                name={el.name}
+                size={{ width: el.width, height: el.height }}
+                onExpand={(by, prompt) => void gen.expand(el, by, prompt)}
+                onClose={() => setDialog(null)}
+              />
+            );
+          })()}
       </div>
 
       {/* ---------- Print output ---------- */}

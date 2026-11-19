@@ -4,6 +4,7 @@ import { PX_PER_MM } from "../lib/units";
 import { formatNumber } from "../lib/numbering";
 import { imageContentStyle } from "../lib/imageEdit";
 import { effectsToCss } from "../lib/effects";
+import { maskStyle } from "../lib/masks";
 import { isEffectivelyVisible } from "../lib/layers";
 import { dashFor, isOpenShape, isPathShape, shapePath } from "../lib/shapes";
 import type { LayerGroup, ShapeElement } from "../types";
@@ -42,6 +43,10 @@ const typographyToCss = (t: Typography): CSSProperties => ({
 /** Absolute placement shared by every element type. */
 const frameStyle = (el: LabelElement): CSSProperties => ({
   ...(el.opacity !== undefined && el.opacity !== 100 ? { opacity: el.opacity / 100 } : {}),
+  // Images and pixel layers are masked on the picture inside the frame, so
+  // effects such as a drop shadow follow the masked shape (Photoshop applies
+  // layer styles after the mask). Other layers are masked as a whole box.
+  ...(el.type !== "image" && el.type !== "raster" ? maskStyle(el.mask) : {}),
   // Effects apply to the whole layer, after any crop.
   ...("effects" in el && el.effects ? { filter: effectsToCss(el.effects) } : {}),
   position: "absolute",
@@ -156,7 +161,11 @@ const ElementView = ({ element, number, hidePlaceholders, groups }: ElementViewP
       // out over the full uncropped frame and clipped by it.
       return (
         <div style={frame} data-image-frame="">
-          <img src={element.src} alt={element.name} style={imageContentStyle(element)} />
+          <img
+            src={element.src}
+            alt={element.name}
+            style={{ ...imageContentStyle(element), ...maskStyle(element.mask) }}
+          />
         </div>
       );
     case "shape":
@@ -187,7 +196,7 @@ const ElementView = ({ element, number, hidePlaceholders, groups }: ElementViewP
             src={element.src}
             alt={element.name}
             draggable={false}
-            style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }}
+            style={{ position: "absolute", inset: 0, width: "100%", height: "100%", ...maskStyle(element.mask) }}
           />
         </div>
       );

@@ -22,6 +22,14 @@ import type { BrushSettings } from "../lib/brush";
 import { BrushStroke } from "../lib/brush";
 import { decodeRaster, pxPerMm, rasterHit, RASTER_DPI } from "../lib/raster";
 import { effectsToCss } from "../lib/effects";
+import SelectionOverlay from "./SelectionOverlay";
+import type { SelectionDraft } from "./SelectionOverlay";
+import type { Selection, SelectionMode } from "../lib/selection/mask";
+import { modeFromModifiers } from "../lib/selection/mask";
+import type { Pt } from "../lib/selection/shapes";
+import { marqueeRect } from "../lib/selection/shapes";
+import type { RefineView, SelectionGesture } from "../lib/selection/useSelection";
+import { isSelectionTool } from "../lib/tools";
 
 export interface CropSession {
   id: string;
@@ -32,6 +40,28 @@ export interface CropSession {
 }
 
 export type CreatableType = "text" | "number" | "shape";
+
+/** What a brush stroke paints on: a pixel layer, or a layer's mask. */
+export type PaintTarget =
+  | { kind: "layer"; element: RasterElement }
+  | {
+      kind: "mask";
+      element: LabelElement;
+      /** The mask frame, label mm. */
+      frame: Rect;
+      pxWidth: number;
+      pxHeight: number;
+      src: string;
+      /** Brush settings with the colour already turned to a grey. */
+      settings: BrushSettings;
+    };
+
+export interface CanvasSelection {
+  outline: string;
+  grid: { width: number; height: number };
+  busy: boolean;
+  refine: { selection: Selection; view: RefineView; opacity: number } | null;
+}
 
 interface CanvasProps {
   design: LabelDesign;
@@ -65,10 +95,15 @@ interface CanvasProps {
   /** Move tool: clicking a grouped layer selects the layer, or its whole group. */
   autoSelect: "layer" | "group";
   brush: BrushSettings;
-  /** Find (or create) the pixel layer a stroke paints on; null cancels. */
-  onBeginPaint: (erase: boolean) => RasterElement | null;
-  /** A finished stroke: the layer's new PNG. */
-  onCommitPaint: (id: string, src: string) => void;
+  /** Find (or create) what a stroke paints on; null cancels. */
+  onBeginPaint: (erase: boolean) => PaintTarget | null;
+  /** A finished stroke: the new PNG for the layer or mask. */
+  onCommitPaint: (target: PaintTarget, src: string) => void;
+  selection: CanvasSelection;
+  selectOptions: { mode: SelectionMode; size: number; removeSize: number };
+  onSelectionGesture: (gesture: SelectionGesture) => void;
+  /** A Remove-tool stroke, label mm, with the brush diameter in mm. */
+  onRemoveStroke: (points: Pt[], diameterMm: number) => void;
 }
 
 interface PaintSession {
@@ -76,6 +111,7 @@ interface PaintSession {
   rect: Rect;
   pxWidth: number;
   pxHeight: number;
+  mask: boolean;
 }
 
 /** hx/hy: which edges a handle moves. -1 = left/top, 1 = right/bottom, 0 = neither. */
@@ -119,10 +155,26 @@ const track = (onMove: (e: PointerEvent) => void, onEnd: (e: PointerEvent) => vo
 };
 
 const PAINT_TOOLS: ToolId[] = ["brush", "eraser"];
+/** Tools that work on pixels anywhere on the label, never on a layer's box. */
+const PIXEL_TOOLS: ToolId[] = ["brush", "eraser", "remove", "marquee-rect", "marquee-ellipse", "lasso", "lasso-poly", "object-select", "quick-select", "magic-wand"];
+/** Tools with a round brush cursor. */
+const ROUND_CURSOR: ToolId[] = ["brush", "eraser", "remove", "quick-select"];
+
+/** Screen px within which a polygonal lasso click closes on its start. */
+const CLOSE_PX = 8;
+const DOUBLE_CLICK_MS = 350;
 
 const TOOL_CURSOR: Partial<Record<ToolId, string>> = {
   brush: "none",
   eraser: "none",
+  remove: "none",
+  "quick-select": "none",
+  "marquee-rect": "crosshair",
+  "marquee-ellipse": "crosshair",
+  lasso: "crosshair",
+  "lasso-poly": "crosshair",
+  "object-select": "crosshair",
+  "magic-wand": "crosshair",
   hand: "grab",
   zoom: "zoom-in",
   text: "text",
@@ -168,6 +220,10 @@ const Canvas = ({
   brush,
   onBeginPaint,
   onCommitPaint,
+  selection,
+  selectOptions,
+  onSelectionGesture,
+  onRemoveStroke,
 }: CanvasProps) => {
   const surfaceRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState<string | null>(null);
@@ -180,6 +236,9 @@ const Canvas = ({
   const brushCursorRef = useRef<HTMLDivElement>(null);
   /** Where the last stroke ended, per layer, for Shift-click straight lines. */
   const lastPaintPoint = useRef<{ id: string; x: number; y: number } | null>(null);
+  const [selDraft, setSelDraft] = useState<SelectionDraft | null>(null);
+  /** Polygonal lasso corners placed so far, and how it will combine. */
+  const poly = useRef<{ points: Pt[]; mode: SelectionMode; lastClick: number } | null>(null);
 
   const layerState: LayerState = useMemo(
     () => ({ elements: design.elements, groups: design.groups ?? [] }),
@@ -410,28 +469,36 @@ const Canvas = ({
     event.preventDefault();
     const target = onBeginPaint(erase);
     if (!target) return;
-    const rect = { x: target.x, y: target.y, width: target.width, height: target.height };
-    const scaleX = target.pxWidth / target.width;
-    const scaleY = target.pxHeight / target.height;
+    const isMask = target.kind === "mask";
+    const el = target.element;
+    const rect = isMask ? target.frame : { x: el.x, y: el.y, width: el.width, height: el.height };
+    const pxW = isMask ? target.pxWidth : target.element.pxWidth;
+    const pxH = isMask ? target.pxHeight : target.element.pxHeight;
+    const src = isMask ? target.src : target.element.src;
+    const scaleX = pxW / rect.width;
+    const scaleY = pxH / rect.height;
     const toPx = (e: { clientX: number; clientY: number; pressure?: number; pointerType?: string }) => {
       const p = pointToMm(e.clientX, e.clientY);
       // Mouse pressure is a constant 0.5; treat it as full pressure.
       const pressure = e.pointerType === "pen" && e.pressure ? e.pressure : 1;
       return { x: (p.x - rect.x) * scaleX, y: (p.y - rect.y) * scaleY, pressure };
     };
-    const settings = event.shiftKey ? { ...brush, smoothing: 0 } : brush;
-    const stroke = new BrushStroke(target.pxWidth, target.pxHeight, settings, erase);
+    const baseSettings = isMask ? target.settings : brush;
+    const settings = event.shiftKey ? { ...baseSettings, smoothing: 0 } : baseSettings;
+    // On a mask, the eraser paints the background grey instead of erasing.
+    const stroke = new BrushStroke(pxW, pxH, settings, isMask ? false : erase);
     const first = toPx(event);
+    const strokeKey = isMask ? `${el.id}:mask` : el.id;
     // Shift-click: a straight line from where the last stroke ended.
     const last = lastPaintPoint.current;
-    if (event.shiftKey && last && last.id === target.id) {
+    if (event.shiftKey && last && last.id === strokeKey) {
       stroke.addPoint({ x: last.x, y: last.y, pressure: 1 });
     }
     stroke.addPoint(first);
     let latestPoint = first;
 
-    setPaint({ id: target.id, rect, pxWidth: target.pxWidth, pxHeight: target.pxHeight });
-    const base = target.src ? (await decodeRaster(target.src))?.image ?? null : null;
+    setPaint({ id: el.id, rect, pxWidth: pxW, pxHeight: pxH, mask: isMask });
+    const base = src ? (await decodeRaster(src))?.image ?? null : null;
 
     let frame = 0;
     const draw = () => {
@@ -456,28 +523,208 @@ const Canvas = ({
         window.clearInterval(airbrush);
         if (frame) cancelAnimationFrame(frame);
         const canvas = paintCanvasRef.current;
-        let src = "";
+        let out = "";
         if (canvas) {
           stroke.render(canvas, base);
           try {
             // Not every environment returns a string here (jsdom gives null).
-            const out: unknown = canvas.toDataURL("image/png");
-            src = typeof out === "string" ? out : "";
+            const url: unknown = canvas.toDataURL("image/png");
+            out = typeof url === "string" ? url : "";
           } catch {
-            src = "";
+            out = "";
           }
         }
-        lastPaintPoint.current = { id: target.id, x: latestPoint.x, y: latestPoint.y };
-        if (src.startsWith("data:image/png")) {
-          onCommitPaint(target.id, src);
+        lastPaintPoint.current = { id: strokeKey, x: latestPoint.x, y: latestPoint.y };
+        if (out.startsWith("data:image/png")) {
+          onCommitPaint(target, out);
           // Keep the live canvas up until the new pixels have decoded, so
           // the layer never flickers back to its old state.
-          void decodeRaster(src).then(() => setPaint(null));
+          void decodeRaster(out).then(() => setPaint(null));
         } else {
           setPaint(null);
         }
       }
     );
+  };
+
+  /* ---------- selection tools ---------- */
+
+  const startMarqueeSelect = (event: React.PointerEvent, kind: "rect" | "ellipse") => {
+    event.preventDefault();
+    const mode = modeFromModifiers(event, selectOptions.mode);
+    const start = pointToMm(event.clientX, event.clientY);
+    const startClient = { x: event.clientX, y: event.clientY };
+    let rect: Rect | null = null;
+    track(
+      (e) => {
+        if (!rect && Math.hypot(e.clientX - startClient.x, e.clientY - startClient.y) < DRAG_THRESHOLD_PX) return;
+        // Keys held at the press chose the mode; pressed mid-drag they
+        // constrain (Shift) or draw from the centre (Alt), as in Photoshop.
+        rect = marqueeRect(start, pointToMm(e.clientX, e.clientY), {
+          square: e.shiftKey && !event.shiftKey,
+          fromCenter: e.altKey && !event.altKey,
+        });
+        setSelDraft({ kind, rect });
+      },
+      () => {
+        setSelDraft(null);
+        onSelectionGesture({ kind, rect, mode });
+      }
+    );
+  };
+
+  const startLasso = (event: React.PointerEvent) => {
+    event.preventDefault();
+    const mode = modeFromModifiers(event, selectOptions.mode);
+    const points: Pt[] = [pointToMm(event.clientX, event.clientY)];
+    track(
+      (e) => {
+        points.push(pointToMm(e.clientX, e.clientY));
+        setSelDraft({ kind: "lasso", points: points.slice() });
+      },
+      () => {
+        setSelDraft(null);
+        onSelectionGesture({ kind: "lasso", points, mode });
+      }
+    );
+  };
+
+  const finishPoly = useCallback(() => {
+    const p = poly.current;
+    poly.current = null;
+    setSelDraft(null);
+    if (p && p.points.length >= 3) onSelectionGesture({ kind: "lasso", points: p.points, mode: p.mode });
+  }, [onSelectionGesture]);
+
+  const cancelPoly = useCallback(() => {
+    poly.current = null;
+    setSelDraft(null);
+  }, []);
+
+  const polyClick = (event: React.PointerEvent) => {
+    event.preventDefault();
+    const point = pointToMm(event.clientX, event.clientY);
+    const now = Date.now();
+    const p = poly.current;
+    if (!p) {
+      poly.current = { points: [point], mode: modeFromModifiers(event, selectOptions.mode), lastClick: now };
+      setSelDraft({ kind: "poly", points: [point], hover: point });
+      return;
+    }
+    const first = p.points[0];
+    const nearStart = Math.hypot(point.x - first.x, point.y - first.y) * PX_PER_MM * scale < CLOSE_PX;
+    const doubled = now - p.lastClick < DOUBLE_CLICK_MS;
+    if ((nearStart && p.points.length >= 3) || (doubled && p.points.length >= 3)) {
+      finishPoly();
+      return;
+    }
+    p.lastClick = now;
+    if (!doubled) p.points.push(point);
+    setSelDraft({ kind: "poly", points: p.points.slice(), hover: point });
+  };
+
+  // Leaving the polygonal lasso drops a half-drawn shape.
+  useEffect(() => {
+    if (tool !== "lasso-poly") cancelPoly();
+  }, [tool, cancelPoly]);
+
+  // Enter closes the polygon, Backspace removes a corner, Esc abandons it.
+  // Listening in the capture phase runs this before App's own shortcuts, so
+  // Esc here never also drops the existing selection.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const p = poly.current;
+      if (!p) return;
+      if (event.key === "Escape") cancelPoly();
+      else if (event.key === "Enter") finishPoly();
+      else if (event.key === "Backspace" || event.key === "Delete") {
+        p.points.pop();
+        if (p.points.length === 0) cancelPoly();
+        else setSelDraft({ kind: "poly", points: p.points.slice(), hover: p.points[p.points.length - 1] });
+      } else return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [cancelPoly, finishPoly]);
+
+  /** Quick selection and Remove: a round brush whose stroke is the gesture. */
+  const startStroke = (event: React.PointerEvent, tone: "select" | "remove") => {
+    event.preventDefault();
+    const mode = modeFromModifiers(event, selectOptions.mode);
+    const diameter = tone === "remove" ? selectOptions.removeSize : selectOptions.size;
+    const points: Pt[] = [pointToMm(event.clientX, event.clientY)];
+    setSelDraft({ kind: "stroke", points: points.slice(), diameter, tone });
+    track(
+      (e) => {
+        points.push(pointToMm(e.clientX, e.clientY));
+        setSelDraft({ kind: "stroke", points: points.slice(), diameter, tone });
+      },
+      () => {
+        setSelDraft(null);
+        if (tone === "remove") onRemoveStroke(points, diameter);
+        else onSelectionGesture({ kind: "quick", points, mode });
+      }
+    );
+  };
+
+  /** Object selection: click an object, or drag a box around it. */
+  const startObjectSelect = (event: React.PointerEvent) => {
+    event.preventDefault();
+    const mode = modeFromModifiers(event, selectOptions.mode);
+    const start = pointToMm(event.clientX, event.clientY);
+    const startClient = { x: event.clientX, y: event.clientY };
+    let rect: Rect | null = null;
+    track(
+      (e) => {
+        if (!rect && Math.hypot(e.clientX - startClient.x, e.clientY - startClient.y) < DRAG_THRESHOLD_PX) return;
+        rect = normalizeRect(start, pointToMm(e.clientX, e.clientY));
+        setSelDraft({ kind: "box", rect });
+      },
+      () => {
+        setSelDraft(null);
+        const box = rect as Rect | null;
+        if (box && box.width > 0.5 && box.height > 0.5) onSelectionGesture({ kind: "object", box, mode });
+        else onSelectionGesture({ kind: "object", point: start, mode });
+      }
+    );
+  };
+
+  const startSelectionTool = (event: React.PointerEvent): boolean => {
+    switch (tool) {
+      case "marquee-rect":
+        startMarqueeSelect(event, "rect");
+        return true;
+      case "marquee-ellipse":
+        startMarqueeSelect(event, "ellipse");
+        return true;
+      case "lasso":
+        startLasso(event);
+        return true;
+      case "lasso-poly":
+        polyClick(event);
+        return true;
+      case "magic-wand":
+        event.preventDefault();
+        onSelectionGesture({
+          kind: "wand",
+          point: pointToMm(event.clientX, event.clientY),
+          mode: modeFromModifiers(event, selectOptions.mode),
+        });
+        return true;
+      case "quick-select":
+        startStroke(event, "select");
+        return true;
+      case "remove":
+        startStroke(event, "remove");
+        return true;
+      case "object-select":
+        startObjectSelect(event);
+        return true;
+      default:
+        return false;
+    }
   };
 
   /** Keep the brush outline under the pointer without re-rendering. */
@@ -486,16 +733,19 @@ const Canvas = ({
     if (!node) return;
     const surface = surfaceRef.current?.getBoundingClientRect();
     if (!surface) return;
+    // Quick selection and Remove size their brush in mm; the paint brush in layer px.
+    const mmBrush = tool === "remove" ? selectOptions.removeSize : tool === "quick-select" ? selectOptions.size : null;
     const target = design.elements.find(
       (e): e is RasterElement => e.type === "raster" && expandedIds.length === 1 && e.id === expandedIds[0]
     );
     const perMm = target ? pxPerMm(target).x : RASTER_DPI / 25.4;
-    const d = Math.max(3, (brush.size / perMm) * PX_PER_MM * scale);
+    const d = Math.max(3, (mmBrush ?? brush.size / perMm) * PX_PER_MM * scale);
+    const roundness = mmBrush ? 1 : brush.roundness / 100;
     node.style.width = `${d}px`;
-    node.style.height = `${d * (brush.roundness / 100)}px`;
+    node.style.height = `${d * roundness}px`;
     node.style.left = `${event.clientX - surface.left - d / 2}px`;
-    node.style.top = `${event.clientY - surface.top - (d * (brush.roundness / 100)) / 2}px`;
-    node.style.transform = brush.angle ? `rotate(${brush.angle}deg)` : "";
+    node.style.top = `${event.clientY - surface.top - (d * roundness) / 2}px`;
+    node.style.transform = !mmBrush && brush.angle ? `rotate(${brush.angle}deg)` : "";
     node.style.display = "block";
   };
 
@@ -611,6 +861,7 @@ const Canvas = ({
       void startPaint(event, tool === "eraser");
       return;
     }
+    if (startSelectionTool(event)) return;
     const createType = CREATE_TOOLS[tool];
     if (createType) {
       event.preventDefault();
@@ -644,7 +895,7 @@ const Canvas = ({
   };
 
   const handleElementPointerDown = (event: React.PointerEvent, element: LabelElement) => {
-    if (event.button !== 0 || tool === "hand" || tool === "zoom" || PAINT_TOOLS.includes(tool)) return; // let the viewport handle it
+    if (event.button !== 0 || tool === "hand" || tool === "zoom" || PIXEL_TOOLS.includes(tool)) return; // let the viewport handle it
     // Paint on a pixel layer above this one wins the click.
     if (tool === "move") {
       const index = design.elements.findIndex((e) => e.id === element.id);
@@ -710,7 +961,7 @@ const Canvas = ({
   // While cropping, the label shows the image through the crop overlay
   // instead, so the committed version must not draw underneath it.
   // Likewise a pixel layer being painted shows through the live canvas.
-  const hiddenId = crop?.id ?? paint?.id ?? null;
+  const hiddenId = crop?.id ?? (paint && !paint.mask ? paint.id : null);
   const renderDesign = useMemo(
     () =>
       hiddenId
@@ -735,7 +986,11 @@ const Canvas = ({
   const cropElement =
     crop && (design.elements.find((e) => e.id === crop.id && e.type === "image") as ImageElement | undefined);
 
-  const viewportCursor = panning ? "grabbing" : TOOL_CURSOR[tool] ?? "default";
+  const viewportCursor = panning
+    ? "grabbing"
+    : selection.busy && isSelectionTool(tool)
+      ? "progress"
+      : TOOL_CURSOR[tool] ?? "default";
 
   return (
     <div className="relative h-full w-full">
@@ -746,8 +1001,11 @@ const Canvas = ({
       style={{ cursor: viewportCursor }}
       onPointerDown={handleViewportPointerDown}
       onPointerMove={(e) => {
-        setPointerMm(pointToMm(e.clientX, e.clientY));
-        if (PAINT_TOOLS.includes(tool)) moveBrushCursor(e);
+        const at = pointToMm(e.clientX, e.clientY);
+        setPointerMm(at);
+        if (ROUND_CURSOR.includes(tool)) moveBrushCursor(e);
+        const p = poly.current;
+        if (p) setSelDraft({ kind: "poly", points: p.points.slice(), hover: at });
       }}
       onPointerLeave={() => {
         setPointerMm(null);
@@ -819,7 +1077,7 @@ const Canvas = ({
               const passThrough =
                 tool === "hand" ||
                 tool === "zoom" ||
-                PAINT_TOOLS.includes(tool) ||
+                PIXEL_TOOLS.includes(tool) ||
                 isCropping ||
                 element.type === "raster";
               return (
@@ -875,7 +1133,7 @@ const Canvas = ({
                             : undefined,
                       // While painting, selection chrome would sit on top of the strokes.
                       outline:
-                        isCropping || PAINT_TOOLS.includes(tool)
+                        isCropping || PIXEL_TOOLS.includes(tool)
                           ? "none"
                           : isSelected
                             ? "1.5px solid var(--accent)"
@@ -883,7 +1141,7 @@ const Canvas = ({
                       // A pixel layer usually covers the whole label; tinting it
                       // would wash out everything, so it gets an outline only.
                       background:
-                        isSelected && !isCropping && element.type !== "raster" && !PAINT_TOOLS.includes(tool)
+                        isSelected && !isCropping && element.type !== "raster" && !PIXEL_TOOLS.includes(tool)
                           ? "var(--accent-soft)"
                           : "transparent",
                       opacity: element.visible ? 1 : 0.4,
@@ -947,14 +1205,30 @@ const Canvas = ({
                   top: px(paint.rect.y),
                   width: px(paint.rect.width),
                   height: px(paint.rect.height),
-                  opacity: paintElement?.opacity !== undefined ? paintElement.opacity / 100 : undefined,
-                  filter:
-                    paintElement && "effects" in paintElement ? effectsToCss(paintElement.effects) : undefined,
+                  // A mask being painted previews as a darkening of what it hides.
+                  ...(paint.mask
+                    ? { mixBlendMode: "multiply" as const, opacity: 0.6 }
+                    : {
+                        opacity: paintElement?.opacity !== undefined ? paintElement.opacity / 100 : undefined,
+                        filter:
+                          paintElement && "effects" in paintElement ? effectsToCss(paintElement.effects) : undefined,
+                      }),
                 }}
               />
             )}
 
-            {PAINT_TOOLS.includes(tool) && (
+            <SelectionOverlay
+              width={px(design.width)}
+              height={px(design.height)}
+              labelMm={{ width: design.width, height: design.height }}
+              grid={selection.grid}
+              outline={selection.outline}
+              draft={selDraft}
+              refine={selection.refine}
+              busy={selection.busy}
+            />
+
+            {ROUND_CURSOR.includes(tool) && (
               <div ref={brushCursorRef} aria-hidden="true" className="brush-cursor" style={{ display: "none" }} />
             )}
 

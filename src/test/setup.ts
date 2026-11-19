@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { afterEach } from "vitest";
+import { afterEach, beforeEach, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
 
 /**
@@ -41,7 +41,20 @@ if (!("PointerEvent" in globalThis)) {
   globalThis.PointerEvent = PointerEventStub as unknown as typeof globalThis.PointerEvent;
 }
 
+/**
+ * The editor looks for the local AI server on start-up. Tests must never
+ * reach the network, so by default the server is simply "not running";
+ * tests of the AI features install their own fake with `vi.stubGlobal`.
+ */
+beforeEach(() => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() => Promise.reject(new TypeError("No network in tests")))
+  );
+});
+
 afterEach(() => {
   cleanup();
   localStorage.clear();
+  vi.unstubAllGlobals();
 });

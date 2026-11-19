@@ -1,6 +1,6 @@
 import type { ShapeKind } from "../types";
 import type { ToolId } from "../lib/tools";
-import { TOOLS } from "../lib/tools";
+import { familyOf, TOOLS } from "../lib/tools";
 import { SHAPE_ICONS, shapeDef } from "../lib/shapes";
 import { Icon } from "./icons";
 import type { IconName } from "./icons";
@@ -15,10 +15,28 @@ const TOOL_ICONS: Record<ToolId, IconName> = {
   brush: "brush",
   eraser: "eraser",
   crop: "crop",
+  "marquee-rect": "marqueeRect",
+  "marquee-ellipse": "marqueeEllipse",
+  lasso: "lasso",
+  "lasso-poly": "lassoPoly",
+  "object-select": "objectSelect",
+  "quick-select": "quickSelect",
+  "magic-wand": "magicWand",
+  remove: "remove",
 };
 
-/** Groups separated by a rule: navigate, create, edit. */
-const GROUPS: ToolId[][] = [["move", "hand", "zoom"], ["text", "number", "shape"], ["brush", "eraser"], ["crop"]];
+/**
+ * Groups separated by a rule: navigate, select, create, paint, edit. A tool
+ * family (marquees, lassos, selection tools) takes one slot, showing
+ * whichever of its tools was used last.
+ */
+const GROUPS: ToolId[][] = [
+  ["move", "hand", "zoom"],
+  ["marquee-rect", "lasso", "object-select"],
+  ["text", "number", "shape"],
+  ["brush", "eraser", "remove"],
+  ["crop"],
+];
 
 /**
  * The tool strip. Each tool's key is shown in its tooltip and as a small
@@ -27,11 +45,14 @@ const GROUPS: ToolId[][] = [["move", "hand", "zoom"], ["text", "number", "shape"
 const Toolbar = ({
   tool,
   shapeKind,
+  familyTools,
   colors,
   onSelect,
   onContextMenu,
 }: {
   tool: ToolId;
+  /** The tool each family slot currently shows, by family id. */
+  familyTools: Record<string, ToolId>;
   /** The shape the Shape tool draws; its icon and name follow it. */
   shapeKind: ShapeKind;
   colors: {
@@ -52,20 +73,26 @@ const Toolbar = ({
     {GROUPS.map((group, i) => (
       <div key={i} className="flex flex-col items-center gap-0.5">
         {i > 0 && <span aria-hidden="true" className="my-1 h-px w-6 bg-[var(--border)]" />}
-        {group.map((id) => {
+        {group.map((slot) => {
+          const family = familyOf(slot);
+          // A family slot shows its active member, or the one used last.
+          const id: ToolId = family ? (family.tools.includes(tool) ? tool : familyTools[family.id] ?? slot) : slot;
           const def = TOOLS.find((t) => t.id === id);
           if (!def) return null;
           const active = tool === id;
           const isShape = id === "shape";
           const label = isShape ? shapeDef(shapeKind).label : def.label;
+          const hasMore = isShape || !!family;
           return (
             <button
-              key={id}
+              key={slot}
               type="button"
               title={
                 isShape
                   ? `${label} tool (U) · right-click or Shift+U for more shapes`
-                  : `${def.label} tool (${def.shortcut})`
+                  : family
+                    ? `${def.label} tool (${def.shortcut}) · right-click or Shift+${def.shortcut} for the other ${family.label.toLowerCase()}`
+                    : `${def.label} tool (${def.shortcut})`
               }
               aria-label={isShape ? "Shape tool" : `${def.label} tool`}
               aria-keyshortcuts={def.shortcut}
@@ -82,7 +109,7 @@ const Toolbar = ({
               }`}
             >
               <Icon name={isShape ? SHAPE_ICONS[shapeKind] : TOOL_ICONS[id]} />
-              {isShape && (
+              {hasMore && (
                 // The small corner triangle marks a tool with more options.
                 <span
                   aria-hidden="true"

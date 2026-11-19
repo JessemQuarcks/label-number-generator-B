@@ -49,6 +49,13 @@ export interface LayerListProps {
   onEffectDelete: (elementId: string, effectId: string) => void;
   onEffectOpen: (elementId: string) => void;
   onEffectContextMenu: (event: React.MouseEvent, elementId: string, effectId: string) => void;
+  /** The layer whose mask (rather than pixels) the brush paints on. */
+  maskTarget: string | null;
+  /** Click a mask thumbnail: target it. Shift toggles it, Ctrl/⌘ loads it as a selection. */
+  onMaskClick: (elementId: string, event: React.MouseEvent) => void;
+  onMaskContextMenu: (event: React.MouseEvent, elementId: string) => void;
+  /** Add a mask to the selected layer (from the selection, if there is one). */
+  onAddMask: () => void;
 }
 
 /** Which part of a row the pointer is over while dragging. */
@@ -112,6 +119,10 @@ const LayerList = ({
   onEffectDelete,
   onEffectOpen,
   onEffectContextMenu,
+  maskTarget,
+  onMaskClick,
+  onMaskContextMenu,
+  onAddMask,
 }: LayerListProps) => {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [filters, setFilters] = useState<ElementType[]>([]);
@@ -448,10 +459,45 @@ const LayerList = ({
                       <span className={`min-w-0 truncate text-[11.5px] ${shown ? "" : "line-through opacity-50"}`}>
                         {el.name}
                       </span>
+                      {el.type === "image" && el.generative && (
+                        <span className="shrink-0 text-[var(--accent)]" title={`Generated (${el.generative.kind})`}>
+                          <Icon name="sparkle" size={11} />
+                          <span className="sr-only">generated</span>
+                        </span>
+                      )}
                       {el.type === "image" && isCropped(el.crop) && (
                         <span className="shrink-0 text-[var(--text-faint)]" title="Cropped">
                           <Icon name="crop" size={11} />
                           <span className="sr-only">cropped</span>
+                        </span>
+                      )}
+                    </button>
+                  )}
+                  {el.mask && (
+                    <button
+                      type="button"
+                      aria-label={`Mask of ${el.name}${el.mask.enabled ? "" : " (disabled)"}`}
+                      aria-pressed={maskTarget === el.id}
+                      title="Layer mask · click to paint on it (white reveals, black hides) · Shift-click to disable · Ctrl-click to load as a selection · right-click for more"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onMaskClick(el.id, e);
+                      }}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        onMaskContextMenu(e, el.id);
+                      }}
+                      className={`relative h-[18px] w-6 shrink-0 overflow-hidden rounded-[3px] border bg-black ${
+                        maskTarget === el.id
+                          ? "border-[var(--accent)] ring-1 ring-[var(--accent)]"
+                          : "border-[var(--border-strong)]"
+                      }`}
+                    >
+                      <img src={el.mask.src} alt="" draggable={false} className="h-full w-full" style={{ objectFit: "fill" }} />
+                      {!el.mask.enabled && (
+                        <span aria-hidden="true" className="absolute inset-0 flex items-center justify-center text-[13px] font-bold leading-none text-[var(--danger)]">
+                          ✕
                         </span>
                       )}
                     </button>
@@ -487,6 +533,12 @@ const LayerList = ({
           {filtering ? " · filtered" : ""}
         </span>
         <IconTip label="Group selected layers (Ctrl+G)" icon="folderPlus" onClick={onGroup} disabled={selectedIds.length === 0} />
+        <IconTip
+          label="Add layer mask (from the selection, if any)"
+          icon="mask"
+          onClick={onAddMask}
+          disabled={selectedIds.length !== 1 || !elements.some((e) => e.id === selectedIds[0])}
+        />
         <IconTip label="New pixel layer" icon="newLayer" onClick={onNewPixelLayer} />
         <IconTip label="Delete selected layers" icon="trash" onClick={onDelete} disabled={selectedIds.length === 0} danger />
       </div>

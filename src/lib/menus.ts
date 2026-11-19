@@ -12,6 +12,10 @@ import { isCropped } from "./imageEdit";
 import { EFFECT_DEFS, EFFECT_PRESETS, supportsEffects } from "./effects";
 import type { ShapeKind } from "../types";
 import { SHAPES } from "./shapes";
+import type { ModifyKind } from "./selection/useSelection";
+import type { AddMaskKind } from "./layerOps";
+import type { Capability } from "./ai/types";
+import { TOOL_FAMILIES } from "./tools";
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 const MOD = isMac ? "⌘" : "Ctrl+";
@@ -77,6 +81,37 @@ export interface MenuCommands {
   resetWorkspace: () => void;
   shortcuts: () => void;
   setTool: (tool: ToolId) => void;
+
+  // Pixel selection (Select menu).
+  selectAllPixels: () => void;
+  deselectPixels: () => void;
+  reselect: () => void;
+  inverse: () => void;
+  selectSubject: () => void;
+  selectBackground: () => void;
+  selectSky: () => void;
+  selectByDescription: () => void;
+  selectAndMask: () => void;
+  modifySelection: (kind: ModifyKind) => void;
+  loadLayerPixels: () => void;
+  loadLayerMask: () => void;
+  layerViaCopy: () => void;
+
+  // Layer masks.
+  addMask: (kind: AddMaskKind) => void;
+  toggleMask: () => void;
+  invertMask: () => void;
+  applyMask: () => void;
+  deleteMask: () => void;
+  editMask: () => void;
+
+  // Generative AI.
+  generativeFill: () => void;
+  generativeRemove: () => void;
+  generativeExpand: () => void;
+  removeBackground: () => void;
+  generateSimilar: () => void;
+  generateImage: () => void;
 }
 
 export interface MenuContext {
@@ -95,6 +130,13 @@ export interface MenuContext {
   workspace: WorkspacePrefs;
   tool: ToolId;
   cmd: MenuCommands;
+  /** A pixel selection exists. */
+  hasPixelSelection: boolean;
+  canReselect: boolean;
+  /** Whether the local AI server can do this right now. */
+  aiCan: (capability: Capability) => boolean;
+  /** The layer whose mask the brush is painting on. */
+  maskTarget: string | null;
 }
 
 const sep: MenuEntry = { kind: "separator" };
@@ -187,6 +229,45 @@ export const shapeItems = (ctx: MenuContext, current: ShapeKind): MenuEntry[] =>
   })),
 ];
 
+/** Layer ▸ Layer Mask. */
+const maskItems = (ctx: MenuContext): MenuEntry[] => {
+  const { cmd, selected, selectedCount, hasPixelSelection } = ctx;
+  const layer = selectedCount === 1 ? selected : null;
+  const mask = layer?.mask;
+  return [
+    { label: "Reveal all", onSelect: () => cmd.addMask("reveal-all"), disabled: !layer },
+    { label: "Hide all", onSelect: () => cmd.addMask("hide-all"), disabled: !layer },
+    { label: "Reveal selection", onSelect: () => cmd.addMask("reveal-selection"), disabled: !layer || !hasPixelSelection },
+    { label: "Hide selection", onSelect: () => cmd.addMask("hide-selection"), disabled: !layer || !hasPixelSelection },
+    sep,
+    {
+      label: "Paint on mask",
+      checked: !!layer && ctx.maskTarget === layer.id,
+      onSelect: cmd.editMask,
+      disabled: !mask,
+    },
+    { label: mask?.enabled === false ? "Enable" : "Disable", onSelect: cmd.toggleMask, disabled: !mask },
+    { label: "Invert mask", onSelect: cmd.invertMask, disabled: !mask },
+    { label: "Load as selection", onSelect: cmd.loadLayerMask, disabled: !mask },
+    { label: "Apply", onSelect: cmd.applyMask, disabled: !mask || layer?.type !== "raster" },
+    { label: "Delete", onSelect: cmd.deleteMask, disabled: !mask, danger: true },
+  ];
+};
+
+/** AI actions on the selected layer's pixels. */
+const generativeLayerItems = (ctx: MenuContext): MenuEntry[] => {
+  const layer = ctx.selectedCount === 1 && ctx.selected && (ctx.selected.type === "image" || ctx.selected.type === "raster") ? ctx.selected : null;
+  return [
+    { label: "Remove background", onSelect: ctx.cmd.removeBackground, disabled: !layer || !ctx.aiCan("subject") },
+    { label: "Generate similar", onSelect: ctx.cmd.generateSimilar, disabled: !layer || !ctx.aiCan("variations") },
+    {
+      label: "Generative expand…",
+      onSelect: ctx.cmd.generativeExpand,
+      disabled: layer?.type !== "image" || (!ctx.aiCan("inpaint") && !ctx.aiCan("remove")),
+    },
+  ];
+};
+
 const imageItems = (ctx: MenuContext): MenuEntry[] => {
   const image = ctx.selected?.type === "image" ? ctx.selected : null;
   const none = !image || ctx.selectedCount !== 1;
@@ -213,6 +294,49 @@ const imageItems = (ctx: MenuContext): MenuEntry[] => {
     },
     sep,
     { label: image?.src ? "Replace image…" : "Choose image…", onSelect: ctx.cmd.replaceImage, disabled: none },
+    sep,
+    ...generativeLayerItems(ctx),
+  ];
+};
+
+/** The Select menu. */
+const selectItems = (ctx: MenuContext): MenuEntry[] => {
+  const { cmd, hasPixelSelection } = ctx;
+  const layer = ctx.selectedCount === 1 ? ctx.selected : null;
+  return [
+    { label: "All", shortcut: `${MOD}A`, onSelect: cmd.selectAllPixels },
+    { label: "Deselect", shortcut: `${MOD}D`, onSelect: cmd.deselectPixels, disabled: !hasPixelSelection },
+    { label: "Reselect", shortcut: `${MOD}${SHIFT}D`, onSelect: cmd.reselect, disabled: !ctx.canReselect },
+    { label: "Inverse", shortcut: `${MOD}${SHIFT}I`, onSelect: cmd.inverse },
+    sep,
+    { kind: "heading", label: "AI" },
+    { label: "Subject", onSelect: cmd.selectSubject, disabled: !ctx.aiCan("subject") },
+    { label: "Background", onSelect: cmd.selectBackground, disabled: !ctx.aiCan("subject") },
+    { label: "Sky", onSelect: cmd.selectSky, disabled: !ctx.aiCan("segment_text") },
+    { label: "Objects by description…", onSelect: cmd.selectByDescription, disabled: !ctx.aiCan("segment_text") },
+    sep,
+    { label: "Select and Mask…", shortcut: `${MOD}${isMac ? "⌥" : "Alt+"}R`, onSelect: cmd.selectAndMask, disabled: !hasPixelSelection },
+    {
+      kind: "submenu",
+      label: "Modify",
+      disabled: !hasPixelSelection,
+      items: [
+        { label: "Border…", onSelect: () => cmd.modifySelection("border") },
+        { label: "Smooth…", onSelect: () => cmd.modifySelection("smooth") },
+        { label: "Expand…", onSelect: () => cmd.modifySelection("expand") },
+        { label: "Contract…", onSelect: () => cmd.modifySelection("contract") },
+        { label: "Feather…", shortcut: `${SHIFT}F6`, onSelect: () => cmd.modifySelection("feather") },
+      ],
+    },
+    sep,
+    { label: "Load from layer pixels", onSelect: cmd.loadLayerPixels, disabled: !layer },
+    { label: "Load from layer mask", onSelect: cmd.loadLayerMask, disabled: !layer?.mask },
+    sep,
+    { kind: "heading", label: "Tools" },
+    ...TOOL_FAMILIES.flatMap((f) => f.tools).map((id) => {
+      const t = TOOLS.find((x) => x.id === id);
+      return { label: t?.label ?? id, shortcut: t?.shortcut, checked: ctx.tool === id, onSelect: () => cmd.setTool(id) };
+    }),
   ];
 };
 
@@ -262,6 +386,19 @@ export const buildMenuBar = (ctx: MenuContext): MenuDef[] => {
         { label: "Select all layers", shortcut: `${MOD}A`, onSelect: cmd.selectAll },
         { label: "Deselect", shortcut: "Esc", onSelect: cmd.deselect, disabled: nothing },
         sep,
+        { kind: "heading", label: "Generative AI" },
+        {
+          label: "Generative fill…",
+          onSelect: cmd.generativeFill,
+          disabled: !ctx.hasPixelSelection || (!ctx.aiCan("inpaint") && !ctx.aiCan("remove")),
+        },
+        {
+          label: "Remove selected (no prompt)",
+          onSelect: cmd.generativeRemove,
+          disabled: !ctx.hasPixelSelection || (!ctx.aiCan("remove") && !ctx.aiCan("inpaint")),
+        },
+        { label: "Generate image…", onSelect: cmd.generateImage },
+        sep,
         { label: "Appearance & workspace…", onSelect: cmd.appearance },
       ],
     },
@@ -278,8 +415,11 @@ export const buildMenuBar = (ctx: MenuContext): MenuDef[] => {
             { label: "Shape", shortcut: "U", onSelect: () => cmd.addLayer("shape") },
             { label: "Pixel layer", onSelect: cmd.newPixelLayer },
             { label: "Image (Place Embedded…)", onSelect: cmd.placeEmbedded },
+            sep,
+            { label: "Layer via copy", shortcut: `${MOD}J`, onSelect: cmd.layerViaCopy, disabled: !ctx.hasPixelSelection },
           ],
         },
+        { kind: "submenu", label: "Layer mask", items: maskItems(ctx), disabled: selectedCount !== 1 },
         { label: "Group layers", shortcut: `${MOD}G`, onSelect: cmd.group, disabled: nothing },
         { label: "Ungroup", shortcut: `${MOD}${SHIFT}G`, onSelect: cmd.ungroup, disabled: !ctx.groupSelected },
         sep,
@@ -300,6 +440,7 @@ export const buildMenuBar = (ctx: MenuContext): MenuDef[] => {
         },
       ],
     },
+    { label: "Select", items: selectItems(ctx) },
     {
       label: "View",
       items: [
@@ -382,8 +523,9 @@ export const buildLayerMenu = (ctx: MenuContext): MenuEntry[] => {
     } else if (selected.type === "image") {
       typeItems.push({ kind: "submenu", label: "Image", items: imageItems(ctx) }, sep);
     } else if (selected.type === "raster") {
-      typeItems.push(...effectItems(ctx), sep);
+      typeItems.push(...effectItems(ctx), sep, ...generativeLayerItems(ctx), sep);
     }
+    typeItems.push({ kind: "submenu", label: "Layer mask", items: maskItems(ctx) }, sep);
   }
   const visibleLabel = groupSelected ? "Show / hide group" : selected?.visible ? "Hide layer" : "Show layer";
   return [
@@ -427,7 +569,20 @@ export const buildEffectMenu = (
 /** Right-click on empty canvas. */
 export const buildCanvasMenu = (ctx: MenuContext): MenuEntry[] => {
   const { cmd } = ctx;
+  const selectionMenu: MenuEntry[] = ctx.hasPixelSelection
+    ? [
+        { label: "Deselect", onSelect: cmd.deselectPixels },
+        { label: "Select inverse", onSelect: cmd.inverse },
+        { label: "Select and Mask…", onSelect: cmd.selectAndMask },
+        { label: "Feather…", onSelect: () => cmd.modifySelection("feather") },
+        { label: "Layer via copy", onSelect: cmd.layerViaCopy },
+        { label: "Generative fill…", onSelect: cmd.generativeFill, disabled: !ctx.aiCan("inpaint") && !ctx.aiCan("remove") },
+        { label: "Remove", onSelect: cmd.generativeRemove, disabled: !ctx.aiCan("remove") && !ctx.aiCan("inpaint") },
+        sep,
+      ]
+    : [];
   return [
+    ...selectionMenu,
     { label: "Place Embedded…", onSelect: cmd.placeEmbedded },
     {
       kind: "submenu",
@@ -456,6 +611,18 @@ export const buildCanvasMenu = (ctx: MenuContext): MenuEntry[] => {
 export const buildToolMenu = (ctx: MenuContext, tool: ToolId, resetDefaults: () => void): MenuEntry[] => {
   const def = TOOLS.find((t) => t.id === tool);
   const hasDefaults = tool === "text" || tool === "number" || tool === "shape" || tool === "brush";
+  const family = TOOL_FAMILIES.find((f) => f.tools.includes(tool));
+  if (family) {
+    return [
+      { kind: "heading", label: `${family.label} · Shift+${def?.shortcut ?? ""} cycles` },
+      ...family.tools.map((id) => {
+        const t = TOOLS.find((x) => x.id === id);
+        return { label: t?.label ?? id, shortcut: t?.shortcut, checked: ctx.tool === id, onSelect: () => ctx.cmd.setTool(id) };
+      }),
+      sep,
+      { label: "Show tool options bar", checked: ctx.workspace.showOptionsBar, onSelect: () => ctx.cmd.toggleBar("showOptionsBar") },
+    ];
+  }
   return [
     { kind: "heading", label: `${def?.label ?? ""} tool · ${def?.shortcut ?? ""}` },
     { label: "Use this tool", onSelect: () => ctx.cmd.setTool(tool), checked: ctx.tool === tool },
@@ -465,3 +632,9 @@ export const buildToolMenu = (ctx: MenuContext, tool: ToolId, resetDefaults: () 
     { label: "Keyboard shortcuts…", onSelect: ctx.cmd.shortcuts },
   ];
 };
+
+/** Right-click on a layer's mask thumbnail. */
+export const buildMaskMenu = (ctx: MenuContext): MenuEntry[] => [
+  { kind: "heading", label: "Layer mask" },
+  ...maskItems(ctx).filter((item) => !("label" in item) || !["Reveal all", "Hide all"].includes(item.label)),
+];

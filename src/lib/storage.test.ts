@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   exportState,
   loadState,
@@ -356,5 +356,17 @@ describe("groups, shapes and pixel layers", () => {
   it("rejects an unknown shape kind", () => {
     const d = normalizeDesign({ name: "X", elements: [{ type: "shape", shape: "<script>" }] })!;
     expect(d.elements[0]).not.toHaveProperty("shape");
+  });
+});
+
+describe("saving when storage is full", () => {
+  it("reports a refused save instead of failing silently", () => {
+    const state = (): AppState => ({ version: 1, designs: [design()], activeId: null, print: { ...DEFAULT_PRINT } });
+    expect(saveState(state())).toBe(true);
+    const spy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("quota", "QuotaExceededError");
+    });
+    expect(saveState(state())).toBe(false);
+    spy.mockRestore();
   });
 });

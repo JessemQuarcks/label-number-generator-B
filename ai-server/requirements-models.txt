@@ -1,0 +1,18 @@
+# Optional ML dependencies for the neural models (SAM, BiRefNet, CLIPSeg, LaMa, diffusion...).
+# Install torch first with the right build for your hardware if pip's default is wrong, e.g.
+#   CUDA 12.x:  pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+#   CPU only:   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+-r requirements.txt
+torch>=2.4
+torchvision>=0.19
+transformers>=4.56          # Sam2Model / Sam2Processor (sam2.1-hiera-small) need >= 4.56
+diffusers>=0.35             # QwenImageEditPipeline needs >= 0.35; Flux pipelines >= 0.30
+accelerate>=0.33            # enable_model_cpu_offload, low_cpu_mem_usage
+huggingface_hub>=0.25
+safetensors>=0.4
+sentencepiece>=0.2          # T5 tokenizer (FLUX)
+protobuf>=4.25              # T5 / sentencepiece tokenizers
+# BiRefNet's trust_remote_code module imports these:
+timm>=1.0
+einops>=0.8
+kornia>=0.7
